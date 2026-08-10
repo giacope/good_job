@@ -20,6 +20,14 @@ RSpec.describe GoodJob::Configuration do
 
       expect(GoodJob.logger).to have_received(:warn).with(/GoodJob is using \d+ threads/)
     end
+
+    it 'counts each fiber of a fiber scheduler because each can hold a database connection', :fiber_isolation, :requires_async do
+      scheduler = GoodJob::Scheduler.new(GoodJob::JobPerformer.new('*'), fibers: 5)
+
+      expect(described_class.total_estimated_threads).to eq GoodJob::SharedExecutor::MAX_THREADS + 5
+
+      scheduler.shutdown
+    end
   end
 
   describe '#execution_mode' do
@@ -83,6 +91,108 @@ RSpec.describe GoodJob::Configuration do
         configuration = described_class.new({})
         expect(configuration.cleanup_discarded_jobs?).to be false
       end
+    end
+  end
+
+  describe '#fibers' do
+    it 'defaults to nil' do
+      configuration = described_class.new({})
+      expect(configuration.fibers).to be_nil
+    end
+
+    context 'when option is given' do
+      it 'uses the option value as an Integer' do
+        configuration = described_class.new({ fibers: '25' })
+        expect(configuration.fibers).to eq 25
+      end
+    end
+
+    context 'when rails config is set' do
+      before do
+        allow(Rails.application.config).to receive(:good_job).and_return({ fibers: 50 })
+      end
+
+      it 'uses rails config value' do
+        configuration = described_class.new({})
+        expect(configuration.fibers).to eq 50
+      end
+    end
+
+    context 'when environment variable is set' do
+      before do
+        stub_const 'ENV', ENV.to_hash.merge({ 'GOOD_JOB_FIBERS' => '100' })
+      end
+
+      it 'uses environment variable' do
+        configuration = described_class.new({})
+        expect(configuration.fibers).to eq 100
+      end
+    end
+
+    it 'is nil when set to 0 or false' do
+      expect(described_class.new({ fibers: 0 }).fibers).to be_nil
+      expect(described_class.new({ fibers: '0' }).fibers).to be_nil
+      expect(described_class.new({ fibers: false }).fibers).to be_nil
+      expect(described_class.new({ fibers: 'false' }).fibers).to be_nil
+    end
+
+    it 'treats zero as disabled from Rails config or the environment' do
+      allow(Rails.application.config).to receive(:good_job).and_return({ fibers: 0 })
+      expect(described_class.new({}).fibers).to be_nil
+
+      stub_const 'ENV', ENV.to_hash.merge({ 'GOOD_JOB_FIBERS' => '0' })
+      allow(Rails.application.config).to receive(:good_job).and_return({})
+      expect(described_class.new({}).fibers).to be_nil
+    end
+
+    it 'is the default count when set to true' do
+      expect(described_class.new({ fibers: true }).fibers).to eq described_class::DEFAULT_FIBERS
+      expect(described_class.new({ fibers: 'true' }).fibers).to eq described_class::DEFAULT_FIBERS
+    end
+
+    it 'is disabled by an explicitly falsey option despite rails config or environment variable' do
+      allow(Rails.application.config).to receive(:good_job).and_return({ fibers: 50 })
+      stub_const 'ENV', ENV.to_hash.merge({ 'GOOD_JOB_FIBERS' => '100' })
+
+      expect(described_class.new({ fibers: false }).fibers).to be_nil
+      expect(described_class.new({ fibers: 0 }).fibers).to be_nil
+    end
+
+    it 'raises on non-numeric values' do
+      expect { described_class.new({ fibers: 'lots' }).fibers }.to raise_error(ArgumentError, /positive integer/)
+    end
+
+    it 'raises on values that are not booleans or integers' do
+      expect { described_class.new({ fibers: 25.7 }).fibers }.to raise_error(ArgumentError, /positive integer.*25\.7/)
+      expect { described_class.new({ fibers: :true }).fibers }.to raise_error(ArgumentError, /positive integer/) # rubocop:disable Lint/BooleanSymbol
+    end
+
+    it 'parses string values as base 10' do
+      expect(described_class.new({ fibers: '010' }).fibers).to eq 10
+    end
+
+    it 'raises on negative values' do
+      expect { described_class.new({ fibers: -100 }).fibers }.to raise_error(ArgumentError, /positive integer/)
+      expect { described_class.new({ fibers: '-100' }).fibers }.to raise_error(ArgumentError, /positive integer/)
+    end
+
+    it 'raises on negative Rails config or environment values' do
+      allow(Rails.application.config).to receive(:good_job).and_return({ fibers: -100 })
+      expect { described_class.new({}).fibers }.to raise_error(ArgumentError, /positive integer/)
+
+      stub_const 'ENV', ENV.to_hash.merge({ 'GOOD_JOB_FIBERS' => '-100' })
+      allow(Rails.application.config).to receive(:good_job).and_return({})
+      expect { described_class.new({}).fibers }.to raise_error(ArgumentError, /positive integer/)
+    end
+
+    it 'defaults lock_strategy to :skiplocked, keeping any explicit setting' do
+      expect(described_class.new({ fibers: 50 }).lock_strategy).to eq :skiplocked
+      expect(described_class.new({ fibers: 50, lock_strategy: :advisory }).lock_strategy).to eq :advisory
+      expect(described_class.new({}).lock_strategy).to eq :advisory
+    end
+
+    it 'treats an unparseable fibers value as disabled in lock_strategy so enqueues keep working' do
+      expect(described_class.new({ fibers: 'junk' }).lock_strategy).to eq :advisory
     end
   end
 

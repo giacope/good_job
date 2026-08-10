@@ -23,6 +23,9 @@ module TestApp
 
     config.active_job.queue_adapter = :good_job
 
+    # Fiber execution requires fiber-level execution state isolation
+    config.active_support.isolation_level = :fiber if ENV["GOOD_JOB_FIBERS"]
+
     # config.middleware.insert_before Rack::Sendfile, ActionDispatch::DebugLocks
     config.log_level = :debug
 

@@ -15,6 +15,9 @@ module GoodJob
     EXECUTION_MODES = [:async, :async_all, :async_server, :external, :inline].freeze
     # Default number of threads to use per {Scheduler}
     DEFAULT_MAX_THREADS = 5
+    # Default number of fibers to use per {Scheduler} when fiber execution is
+    # enabled without an explicit count (e.g. +fibers: true+)
+    DEFAULT_FIBERS = 25
     # Default number of seconds between polls for jobs
     DEFAULT_POLL_INTERVAL = 10
     # Default poll interval for async in development environment
@@ -72,7 +75,11 @@ module GoodJob
     # @return [Integer]
     def self.total_estimated_threads(warn: false)
       utility_threads = GoodJob::SharedExecutor::MAX_THREADS
-      scheduler_threads = GoodJob::Scheduler.instances.sum { |scheduler| scheduler.stats[:max_threads] }
+      scheduler_threads = GoodJob::Scheduler.instances.sum do |scheduler|
+        stats = scheduler.stats
+        # Each in-flight fiber can hold its own database connection.
+        stats.fetch(:max_fibers, stats[:max_threads])
+      end
 
       good_job_threads = utility_threads + scheduler_threads
       puma_threads = (Puma::Server.current&.max_threads if defined?(Puma::Server)) || 0
@@ -145,13 +152,54 @@ module GoodJob
     # individual schedulers.
     # @return [Integer]
     def max_threads
-      (
-        options[:max_threads] ||
-          rails_config[:max_threads] ||
-          env['GOOD_JOB_MAX_THREADS'] ||
-          env['RAILS_MAX_THREADS'] ||
-          DEFAULT_MAX_THREADS
-      ).to_i
+      (configured_max_threads || env['RAILS_MAX_THREADS'] || DEFAULT_MAX_THREADS).to_i
+    end
+
+    # Indicates the number of fibers to use per {Scheduler}. When set, jobs
+    # are executed as fibers on a single reactor thread (via the +async+ gem)
+    # instead of on a thread pool. Requires
+    # +config.active_support.isolation_level = :fiber+. Note that
+    # {#queue_string} may provide more specific fiber counts to use with
+    # individual schedulers. Returns +nil+ when fiber execution is disabled;
+    # +0+ or +false+ disable it, +true+ enables it with {DEFAULT_FIBERS}, and
+    # any other non-integer or negative value raises +ArgumentError+.
+    # @return [Integer, nil]
+    def fibers
+      value = options[:fibers]
+      value = rails_config[:fibers] if value.nil?
+      value = env['GOOD_JOB_FIBERS'] if value.nil?
+
+      if value.is_a?(String)
+        stripped = value.strip
+        value = if stripped.empty? || stripped.casecmp("false").zero?
+                  false
+                elsif stripped.casecmp("true").zero?
+                  true
+                else
+                  # Keep the unparseable original so the error below names it.
+                  Integer(stripped, 10, exception: false) || value
+                end
+      end
+
+      case value
+      when nil, false
+        nil
+      when true
+        DEFAULT_FIBERS
+      when Integer
+        raise ArgumentError, invalid_fibers_message(value) if value.negative?
+
+        value.zero? ? nil : value
+      else
+        raise ArgumentError, invalid_fibers_message(value)
+      end
+    end
+
+    # Whether {#max_threads} was explicitly configured via a GoodJob-specific
+    # setting (rather than defaulted or inherited from +RAILS_MAX_THREADS+).
+    # @return [Boolean]
+    def max_threads_configured?
+      !configured_max_threads.nil?
     end
 
     # Describes which queues to execute jobs from and how those queues should
@@ -400,14 +448,25 @@ module GoodJob
       DEFAULT_ENABLE_PAUSES
     end
 
-    # Strategy for locking jobs during dequeue.
+    # Strategy for locking jobs during dequeue. Defaults to +:skiplocked+ when
+    # fiber execution is enabled because +:advisory+ pins one connection per
+    # in-flight job for its session-level advisory lock, capping fiber
+    # concurrency at the connection pool size. An unparseable +fibers+ value is
+    # treated as disabled here so enqueues keep working when the scheduler has
+    # already fallen back to threads.
     # @return [Symbol]
     def lock_strategy
+      fibers_enabled = begin
+        fibers
+      rescue ArgumentError
+        nil
+      end
+
       (
         options[:lock_strategy] ||
           rails_config[:lock_strategy] ||
           env['GOOD_JOB_LOCK_STRATEGY'] ||
-          :advisory
+          (fibers_enabled ? :skiplocked : :advisory)
       )&.to_sym
     end
 
@@ -452,6 +511,14 @@ module GoodJob
 
     def validator
       @_validator ||= Validator.new(self)
+    end
+
+    def invalid_fibers_message(value)
+      "GoodJob fibers must be a positive integer, true, or false (e.g. GOOD_JOB_FIBERS=100), but was '#{value}'"
+    end
+
+    def configured_max_threads
+      options[:max_threads] || rails_config[:max_threads] || env['GOOD_JOB_MAX_THREADS']
     end
 
     def rails_config

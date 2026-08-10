@@ -16,6 +16,11 @@ gemspec
 gem 'activerecord-jdbcpostgresql-adapter', platforms: [:jruby]
 gem 'pg', platforms: [:mri, :windows]
 
+# Optional dependency for fiber-based job execution (GOOD_JOB_FIBERS).
+install_if -> { RUBY_ENGINE == "ruby" && Gem.ruby_version >= Gem::Version.new("3.2") } do
+  gem 'async', '>= 2.24'
+end
+
 # rdoc >= 8.0 hard-depends on rbs, whose native extension doesn't build on JRuby
 # (github.com/ruby/rdoc/issues/1746). rbs only ships a working (precompiled java
 # platform) build starting with this prerelease. Remove once rbs ships a stable

@@ -70,6 +70,10 @@ module GoodJob
                   type: :numeric,
                   banner: 'COUNT',
                   desc: "Default number of threads per pool to use for working jobs. (env var: GOOD_JOB_MAX_THREADS, default: 5)"
+    method_option :fibers,
+                  type: :string,
+                  banner: 'COUNT',
+                  desc: "Execute jobs as this many fibers (or 'true' for the default count) on a reactor thread instead of a thread pool; requires the 'async' gem and isolation_level = :fiber. (env var: GOOD_JOB_FIBERS, default: nil)"
     method_option :poll_interval,
                   type: :numeric,
                   banner: 'SECONDS',

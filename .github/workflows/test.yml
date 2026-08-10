@@ -96,11 +96,13 @@ jobs:
           # Rails 6.1: lowest (Ruby 3.0) and highest (Ruby 4.0)
           - { ruby: "3.0", gemfile: rails_6.1, pg: 18 }
           - { ruby: "4.0", gemfile: rails_6.1, pg: 18 }
-          # Rails 7.0
+          # Rails 7.0: Ruby 3.2 covers the minimum fiber-execution runtime.
           - { ruby: "3.0", gemfile: rails_7.0, pg: 18 }
+          - { ruby: "3.2", gemfile: rails_7.0, pg: 18 }
           - { ruby: "4.0", gemfile: rails_7.0, pg: 18 }
-          # Rails 7.1
+          # Rails 7.1: Ruby 3.2 covers the minimum fiber-execution runtime.
           - { ruby: "3.0", gemfile: rails_7.1, pg: 18 }
+          - { ruby: "3.2", gemfile: rails_7.1, pg: 18 }
           - { ruby: "4.0", gemfile: rails_7.1, pg: 18 }
           # Rails 7.2 (requires Ruby >= 3.1)
           - { ruby: 3.1, gemfile: rails_7.2, pg: 18 }
