@@ -2,6 +2,8 @@
 
 require "active_support/core_ext/numeric/time"
 
+require_relative "configuration/validator"
+
 module GoodJob
   #
   # +GoodJob::Configuration+ provides normalized configuration information to
@@ -106,6 +108,12 @@ module GoodJob
       self.class.validate_dequeue_query_sort(dequeue_query_sort)
     end
 
+    # +valid?+ checks whether the configuration is valid, e.g. whether Cron
+    # entries reference Job classes that exist. Intended to be used in a
+    # test, for example: +expect(GoodJob.configuration).to be_valid+
+    # +errors+ contains any errors from the most recent call to +valid?+.
+    delegate :valid?, :errors, to: :validator
+
     # Specifies how and where jobs should be executed. See {Adapter#initialize}
     # for more details on possible values.
     # @return [Symbol]
@@ -143,6 +151,18 @@ module GoodJob
           env['GOOD_JOB_MAX_THREADS'] ||
           env['RAILS_MAX_THREADS'] ||
           DEFAULT_MAX_THREADS
+      ).to_i
+    end
+
+    # Number of fibers per {Scheduler}, overridden by counts in {#queue_string}.
+    # Zero, the default, executes jobs with threads.
+    # @return [Integer]
+    def fibers
+      (
+        options[:fibers] ||
+          rails_config[:fibers] ||
+          env['GOOD_JOB_FIBERS'] ||
+          0
       ).to_i
     end
 
@@ -392,7 +412,7 @@ module GoodJob
       DEFAULT_ENABLE_PAUSES
     end
 
-    # Strategy for locking jobs during dequeue.
+    # Strategy for locking jobs during dequeue. Defaults to +:advisory+.
     # @return [Symbol]
     def lock_strategy
       (
@@ -441,6 +461,10 @@ module GoodJob
     end
 
     private
+
+    def validator
+      @_validator ||= Validator.new(self)
+    end
 
     def rails_config
       Rails.application.config.good_job

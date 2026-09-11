@@ -29,6 +29,7 @@ require_relative "good_job/cron_manager"
 require_relative "good_job/current_thread"
 require_relative "good_job/daemon"
 require_relative "good_job/dependencies"
+require_relative "good_job/fiber_pool_executor"
 require_relative "good_job/job_performer"
 require_relative "good_job/job_performer/metrics"
 require_relative "good_job/log_subscriber"
@@ -316,7 +317,7 @@ module GoodJob
   # @return [Boolean]
   def self.migrated?
     GoodJob::Job.lock_type_migrated? &&
-      GoodJob::Job.connection.index_name_exists?(:good_jobs, "index_good_jobs_on_unfinished_or_errored")
+      GoodJob::Job.connection.index_name_exists?(:good_jobs, "index_good_jobs_on_discarded_job_class")
   end
 
   # Pause job execution for a given queue or job class.
@@ -341,8 +342,8 @@ module GoodJob
   # @param job_class [String, nil] Job class name to check
   # @param label [String, nil] Label to check
   # @return [Boolean]
-  def self.paused?(queue: nil, job_class: nil, label: nil)
-    GoodJob::Setting.paused?(queue: queue, job_class: job_class, label: label)
+  def self.paused?(active_job: nil, queue: nil, job_class: nil, label: nil)
+    GoodJob::Setting.paused?(active_job: active_job, queue: queue, job_class: job_class, label: label)
   end
 
   # Get a list of all paused queues and job classes
