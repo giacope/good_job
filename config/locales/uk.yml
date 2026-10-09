@@ -49,6 +49,11 @@ uk:
         last_7_days: Last 7 days
         title: Discard Cleaner
         total: Total
+    concurrency_claims:
+      states:
+        granted: Надано
+        promoted: Просунуто
+        waiting: Очікує
     cron_entries:
       actions:
         confirm_disable: Ви впевнені, що хочете вимкнути цю cron-запис?
@@ -73,63 +78,63 @@ uk:
         about_x_hours:
           few: близько %{count} годин
           many: близько %{count} годин
-          one: близько 1 години
+          one: близько %{count} години
           other: близько %{count} годин
         about_x_months:
           few: близько %{count} місяців
           many: близько %{count} місяців
-          one: близько 1 місяця
+          one: близько %{count} місяця
           other: близько %{count} місяців
         about_x_years:
           few: близько %{count} років
           many: близько %{count} років
-          one: близько 1 року
+          one: близько %{count} року
           other: близько %{count} років
         almost_x_years:
           few: майже %{count} роки
           many: майже %{count} років
-          one: майже 1 рік
+          one: майже %{count} рік
           other: майже %{count} років
         half_a_minute: півхвилини
         less_than_x_minutes:
           few: менше %{count} хвилин
           many: менше %{count} хвилин
-          one: менше 1 хвилини
+          one: менше %{count} хвилини
           other: менше %{count} хвилин
         less_than_x_seconds:
           few: менше %{count} секунд
           many: менше %{count} секунд
-          one: менше 1 секунди
+          one: менше %{count} секунди
           other: менше %{count} секунд
         over_x_years:
           few: більше %{count} років
           many: більше %{count} років
-          one: понад 1 рік
+          one: понад %{count} рік
           other: понад %{count} років
         x_days:
           few: "%{count} дні"
           many: "%{count} днів"
-          one: 1 день
+          one: "%{count} день"
           other: "%{count} днів"
         x_minutes:
-          few: 1 хвилини
+          few: "%{count} хвилини"
           many: "%{count} хвилин"
-          one: 1 хвилина
+          one: "%{count} хвилина"
           other: "%{count} хвилин"
         x_months:
           few: "%{count} місяці"
           many: "%{count} місяців"
-          one: 1 місяць
+          one: "%{count} місяць"
           other: "%{count} місяців"
         x_seconds:
           few: "%{count} секунди"
           many: "%{count} секунд"
-          one: 1 секунда
+          one: "%{count} секунда"
           other: "%{count} секунд"
         x_years:
           few: "%{count} роки"
           many: "%{count} років"
-          one: 1 рік
+          one: "%{count} рік"
           other: "%{count} років"
     duration:
       hours: "%{hour}г %{min}хв"
@@ -187,7 +192,7 @@ uk:
           apply_to_all:
             few: Застосувати до всіх %{count} робіт.
             many: Застосувати до всіх %{count} робіт.
-            one: Застосувати до всіх 1 роботи.
+            one: Застосувати до всіх %{count} роботи.
             other: Застосувати до всіх %{count} робіт.
           confirm_destroy_all: Ви впевнені, що хочете видалити вибрані роботи?
           confirm_discard_all: Ви впевнені, що хочете відкинути вибрані роботи?
@@ -225,6 +230,7 @@ uk:
       job:
         arguments: Аргументи
         attempts: Спроби
+        concurrency_claims: Заявки на паралельність
         labels: Мітки
         priority: Пріоритет
         queue: Черга
@@ -260,17 +266,57 @@ uk:
         value: Значення
     performance:
       index:
-        average_duration: Середня тривалість
-        chart_title: Загальний час виконання в секундах
+        chart_title: Сумарна затримка виконання в секундах
+        chart_title_queue: Середня затримка в черзі в секундах
+        chart_title_total: Середня загальна затримка в секундах
+        execution_latency: Затримка виконання
         executions: Виконання
         job_class: Клас завдання
-        maximum_duration: Максимальна тривалість
-        minimum_duration: Мінімальна тривалість
+        jobs: Завдання
+        no_executions: Немає виконань за цей період.
+        queue_latency: Затримка в черзі
         queue_name: Назва черги
         title: Продуктивність
+        total_latency: Загальна затримка
+      latency:
+        average: сер
+        maximum: макс
+        minimum: мін
+      metric:
+        chart_metric: Метрика графіка
+        metric_options:
+          execution: Затримка виконання
+          queue: Затримка в черзі
+          total: Загальна затримка
+      range:
+        bucket_size:
+          days: "%{count} д"
+          hours: "%{count}г"
+          minutes: "%{count}хв"
+          months: "~%{count} міс"
+          seconds: "%{count}с"
+          years: "~%{count} р"
+        chart_bucket_size: 'Часова деталізація діаграми: %{size}'
+        custom_range: Користувацький
+        custom_range_hint: перетягніть на діаграмі
+        end_time: Час завершення
+        open_time_ranges: Відкрити часові діапазони продуктивності
+        quick_ranges: Швидкі діапазони
+        range_options:
+          1h: За останню годину
+          24h: Останні 24 години
+          6h: Останні 6 годин
+          7d: Останні 7 днів
+        reload_range: Перезавантажити дані про продуктивність
+        start_time: Час початку
+        time_range: Часовий діапазон продуктивності
+        time_zone: 'Часовий пояс:'
       show:
+        execution_chart_title: Затримка виконання
+        queue_chart_title: Затримка в черзі
         slow: Повільно
         title: Продуктивність
+        total_chart_title: Загальна затримка
     processes:
       index:
         cron_enabled: Cron увімкнено

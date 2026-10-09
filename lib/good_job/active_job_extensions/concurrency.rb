@@ -16,25 +16,43 @@ module GoodJob
       ThrottleExceededError = Class.new(ConcurrencyExceededError)
 
       class Rule
-        attr_reader :label, :total_limit, :enqueue_limit, :perform_limit, :enqueue_throttle, :perform_throttle
+        attr_reader :label, :apply_label, :total_limit, :enqueue_limit, :perform_limit, :enqueue_throttle, :perform_throttle
 
         def initialize(config)
           @label = config[:label]
+          @apply_label = config[:apply_label] || false
+          raise ArgumentError, "`apply_label: true` requires a `label:`" if @apply_label && @label.blank?
+
           @key = config.key?(:key) ? config[:key] : GoodJob::NONE
           @total_limit = config[:total_limit]
           @enqueue_limit = config[:enqueue_limit]
           @perform_limit = config[:perform_limit]
           @enqueue_throttle = config[:enqueue_throttle]
           @perform_throttle = config[:perform_throttle]
+
+          return unless @label.present? && key.present?
+
+          GoodJob.deprecator.warn("Supplying both `label:` and `key:` arguments to `good_job_concurrency_rule` is deprecated. Locks use the `label:` value; `key:` is ignored. Remove `key:` from the rule.")
         end
 
         def key
           @key.equal?(GoodJob::NONE) ? nil : @key
         end
 
+        # The label to apply to the job when the rule is defined with +apply_label: true+.
+        # @return [String, nil]
+        def applied_label(job)
+          resolve_label(job) if @apply_label
+        end
+
+        # Whether the rule limits or throttles jobs at enqueue time.
+        def enqueue_limited?
+          @total_limit.present? || @enqueue_limit.present? || @enqueue_throttle.present?
+        end
+
         def evaluate(job, stage)
-          resolved_key = resolve_key(job)
           resolved_label = resolve_label(job)
+          resolved_key = resolve_key(job, resolved_label)
           return nil if resolved_key.blank? && resolved_label.blank?
 
           if stage == :enqueue
@@ -58,9 +76,9 @@ module GoodJob
           !@key.equal?(GoodJob::NONE)
         end
 
-        def resolve_key(job)
-          if key.blank?
-            "label:#{resolve_label(job)}"
+        def resolve_key(job, label)
+          if label.present? || key.blank?
+            "label:#{label}"
           else
             key_value = @key.respond_to?(:call) ? job.instance_exec(&@key) : @key
             raise TypeError, "Concurrency key must be a String; was a #{key_value.class}" if key_value.present? && VALID_TYPES.none? { |type| key_value.is_a?(type) }
@@ -72,7 +90,8 @@ module GoodJob
         def resolve_label(job)
           return if @label.blank?
 
-          @label.respond_to?(:call) ? job.instance_exec(&@label) : @label
+          label = @label.respond_to?(:call) ? job.instance_exec(&@label) : @label
+          label.to_s.strip.presence
         end
 
         def resolve_limit(job, value)
@@ -91,6 +110,17 @@ module GoodJob
           value
         end
 
+        # The claim key for the jobs counted by +query_scope+.
+        def scoped_key(label, key)
+          if label.present?
+            "label:#{label}"
+          elsif key_explicit? && key.present?
+            "key:#{key}"
+          else
+            "all"
+          end
+        end
+
         def query_scope(label, key)
           if label.present?
             GoodJob::Job.labeled(label)
@@ -102,7 +132,7 @@ module GoodJob
         end
 
         def check_enqueue(limit, throttle, job, key, label, enqueue_limit_flag: false)
-          return nil if label.present? && job.good_job_labels.exclude?(label)
+          return nil if label.present? && job.good_job_labels.none? { |job_label| job_label.to_s.strip == label }
 
           query_scope = query_scope(label, key)
           exceeded = nil
@@ -156,21 +186,41 @@ module GoodJob
         end
 
         def check_perform(limit, throttle, job, key, label)
-          return nil if label.present? && job.good_job_labels.exclude?(label)
+          return nil if label.present? && job.good_job_labels.none? { |job_label| job_label.to_s.strip == label }
 
           query_scope = query_scope(label, key)
+          claim_key = scoped_key(label, key)
           exceeded = nil
+          commit = false
 
           GoodJob::Job.transaction(requires_new: true, joinable: false) do
+            # The rule's key is the advisory lock for the checks; the claim key names the counted scope.
             GoodJob::Job.advisory_lock_key(key, function: "pg_advisory_xact_lock") do
               if limit
-                allowed_active_job_ids = query_scope.running
-                                                    .order(Arel.sql("COALESCE(performed_at, scheduled_at, created_at) ASC"))
-                                                    .limit(limit).pluck(:active_job_id)
-                # The current job has already been locked and will appear in the previous query
-                unless allowed_active_job_ids.include?(job.job_id)
-                  exceeded = :limit
-                  next
+                commit = true
+                if GoodJob::ConcurrencyClaim.table_exists?
+                  granted = GoodJob::ConcurrencyClaim.claim(
+                    key: claim_key,
+                    limit: limit,
+                    scope: query_scope,
+                    job_id: job.job_id,
+                    locked_by_id: CurrentThread.job&.locked_by_id
+                  )
+                  unless granted
+                    exceeded = :limit
+                    next
+                  end
+                else
+                  # The current job's performed_at was committed before this check, acting as its claim on a slot.
+                  # Count the other claims rather than ranking by performed_at, because performed_at ordering
+                  # does not necessarily match commit ordering.
+                  other_running_count = query_scope.running.where.not(active_job_id: job.job_id).count
+                  if other_running_count >= limit
+                    exceeded = :limit
+                    # Release this job's claim so that the next contender for the lock does not count it.
+                    GoodJob::Job.where(active_job_id: job.job_id).update_all(performed_at: nil) # rubocop:disable Rails/SkipsModelValidations
+                    next
+                  end
                 end
               end
 
@@ -195,9 +245,9 @@ module GoodJob
               end
             end
 
-            # Rollback the transaction because it's potentially less expensive than committing it
-            # even though nothing has been altered in the transaction.
-            raise ActiveRecord::Rollback
+            # Commit claim changes made while holding the lock; otherwise rollback because it's potentially
+            # less expensive than committing it even though nothing has been altered in the transaction.
+            raise ActiveRecord::Rollback unless commit
           end
 
           exceeded
@@ -230,30 +280,9 @@ module GoodJob
           wait: wait_key
         )
 
-        before_enqueue do |job|
-          # Don't attempt to enforce concurrency limits with other queue adapters.
-          next unless job.class.queue_adapter.is_a?(GoodJob::Adapter)
-
-          # Always allow jobs to be retried because the current job's execution will complete momentarily
-          next if CurrentThread.active_job_id == job.job_id
-
-          rules = job.class.good_job_concurrency_rules
-
-          # Only generate the concurrency key on the initial enqueue in case it is dynamic
-          if job.class.good_job_concurrency_config.present?
-            job.good_job_concurrency_key ||= job._good_job_concurrency_key
-            legacy_key = job.good_job_concurrency_key
-            rules = [Rule.new(job.class.good_job_concurrency_config.merge(key: legacy_key)), *rules] if legacy_key.present?
-          end
-
-          exceeded = nil
-          rules.each do |rule|
-            exceeded = rule.evaluate(job, :enqueue)
-            break if exceeded
-          end
-
-          throw :abort if exceeded
-        end
+        # Kept as the last enqueue callback (see .set_callback) so that labels applied by
+        # the job's other enqueue callbacks are present when the rules are checked.
+        before_enqueue :_good_job_concurrency_before_enqueue
 
         before_perform do |job|
           # Don't attempt to enforce concurrency limits with other queue adapters.
@@ -277,6 +306,9 @@ module GoodJob
             break if exceeded
           end
 
+          # Release claims granted by earlier rules so they are not held while this job waits
+          GoodJob::ConcurrencyClaim.release_job(job.job_id) if exceeded && GoodJob::ConcurrencyClaim.table_exists?
+
           if exceeded == :limit
             raise GoodJob::ActiveJobExtensions::Concurrency::ConcurrencyExceededError
           elsif exceeded == :throttle
@@ -286,6 +318,33 @@ module GoodJob
       end
 
       class_methods do
+        # Whenever an enqueue callback is added, moves the concurrency check to the end of the
+        # enqueue callback chain. The concurrency check then runs after enqueue callbacks that are
+        # defined later in the class or its subclasses (e.g. a +before_enqueue+ that applies
+        # +good_job_labels+).
+        def set_callback(name, *filter_list, &block)
+          super
+          _good_job_concurrency_check_last if name.to_sym == :enqueue
+        end
+
+        private
+
+        def _good_job_concurrency_check_last
+          [self, *descendants].each do |klass|
+            chain = klass._enqueue_callbacks
+            # A subclass may have skipped the callback, or replaced it with a conditional copy via +skip_callback+.
+            callback = chain.find { |cb| cb.kind == :before && cb.filter == :_good_job_concurrency_before_enqueue }
+            next if callback.nil? || chain.to_a.last.equal?(callback)
+
+            chain = chain.dup
+            chain.delete(callback)
+            chain.append(callback)
+            klass._enqueue_callbacks = chain
+          end
+        end
+
+        public
+
         def good_job_control_concurrency_with(
           total_limit: NONE,
           enqueue_limit: NONE,
@@ -306,11 +365,12 @@ module GoodJob
 
         # Define a concurrency rule. Rules are appended to the class-level
         # `good_job_concurrency_rules` array. Each rule uses keyword arguments that may
-        # include keys such as :label, :key (optional lock key), and
+        # include keys such as :label, :apply_label, :key (deprecated when combined with :label), and
         # stage-specific settings like :enqueue_limit, :enqueue_throttle,
         # :perform_limit, :perform_throttle, and :total_limit.
         def good_job_concurrency_rule(
           label: NONE,
+          apply_label: NONE,
           key: NONE,
           total_limit: NONE,
           enqueue_limit: NONE,
@@ -320,6 +380,7 @@ module GoodJob
         )
           rule = {
             label: label,
+            apply_label: apply_label,
             key: key,
             total_limit: total_limit,
             enqueue_limit: enqueue_limit,
@@ -330,6 +391,15 @@ module GoodJob
 
           self.good_job_concurrency_rules = Array(good_job_concurrency_rules) + [Rule.new(rule)]
         end
+      end
+
+      # Whether the job is subject to enqueue-time concurrency checks
+      # and so must be enqueued individually rather than in bulk.
+      # @return [Boolean]
+      def good_job_enqueue_concurrency_controlled?
+        config = self.class.good_job_concurrency_config
+        legacy = good_job_concurrency_key.present? && (config[:enqueue_limit] || config[:total_limit]).present?
+        legacy || Array(self.class.good_job_concurrency_rules).any?(&:enqueue_limited?)
       end
 
       # Existing or dynamically generated concurrency key
@@ -356,6 +426,33 @@ module GoodJob
       # @return [String] concurrency key
       def _good_job_default_concurrency_key
         self.class.name.to_s
+      end
+
+      private
+
+      def _good_job_concurrency_before_enqueue
+        # Don't attempt to enforce concurrency limits with other queue adapters.
+        return unless self.class.queue_adapter.is_a?(GoodJob::Adapter)
+
+        # Always allow jobs to be retried because the current job's execution will complete momentarily
+        return if CurrentThread.active_job_id == job_id
+
+        rules = self.class.good_job_concurrency_rules
+
+        # Only generate the concurrency key on the initial enqueue in case it is dynamic
+        if self.class.good_job_concurrency_config.present?
+          self.good_job_concurrency_key ||= _good_job_concurrency_key
+          legacy_key = good_job_concurrency_key
+          rules = [Rule.new(self.class.good_job_concurrency_config.merge(key: legacy_key)), *rules] if legacy_key.present?
+        end
+
+        exceeded = nil
+        rules.each do |rule|
+          exceeded = rule.evaluate(self, :enqueue)
+          break if exceeded
+        end
+
+        throw :abort if exceeded
       end
     end
   end

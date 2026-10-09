@@ -99,7 +99,7 @@ RSpec.describe GoodJob::ProbeServer do
           ip_address = Socket.ip_address_list.select(&:ipv4?).map(&:ip_address).first
           response = Net::HTTP.get_response(ip_address, "/", port)
 
-          expect(response["server"]).to match(/WEBrick/)
+          expect(response["server"]).to include('WEBrick')
 
           probe_server.stop
         end
@@ -138,7 +138,7 @@ RSpec.describe GoodJob::ProbeServer do
         context "when WEBrick isn't in the load path" do
           it 'sends out a warning and falls back to the built in server' do
             allow_any_instance_of(described_class).to receive(:require).with("webrick").and_raise(LoadError)
-            allow(GoodJob.logger).to receive(:warn)
+            allow(GoodJob.deprecator).to receive(:warn)
 
             probe_server = described_class.new(port: port, handler: :webrick)
             probe_server.start
@@ -147,7 +147,7 @@ RSpec.describe GoodJob::ProbeServer do
             ip_address = Socket.ip_address_list.select(&:ipv4?).map(&:ip_address).first
             response = Net::HTTP.get(ip_address, "/", port)
 
-            expect(GoodJob.logger).to have_received(:warn).with(/WEBrick was requested/)
+            expect(GoodJob.deprecator).to have_received(:warn)
             expect(response).to eq("OK")
 
             probe_server.stop
@@ -175,6 +175,58 @@ RSpec.describe GoodJob::ProbeServer do
 
           probe_server.stop
         end
+      end
+    end
+
+    context "with an unsupported handler" do
+      it 'sends out a warning and falls back to the built in server' do
+        allow(GoodJob.deprecator).to receive(:warn)
+
+        probe_server = described_class.new(port: port, handler: :puma)
+        probe_server.start
+        wait_until(max: 1) { expect(probe_server).to be_running }
+
+        ip_address = Socket.ip_address_list.select(&:ipv4?).map(&:ip_address).first
+        response = Net::HTTP.get(ip_address, "/", port)
+
+        expect(GoodJob.deprecator).to have_received(:warn)
+        expect(response).to eq("OK")
+
+        probe_server.stop
+      end
+    end
+  end
+
+  describe '#close_socket' do
+    it 'is a no-op when the server was never started' do
+      expect { described_class.new(port: port).close_socket }.not_to raise_error
+    end
+  end
+
+  describe GoodJob::ProbeServer::SimpleHandler do
+    let(:handler) { described_class.new(GoodJob::ProbeServer.default_app, port: port, logger: GoodJob.logger) }
+
+    describe '#listen' do
+      it 'binds the port without starting the thread that serves it' do
+        handler.listen
+
+        expect { TCPServer.new('0.0.0.0', port).close }.to raise_error(Errno::EADDRINUSE)
+        handler.stop
+      end
+    end
+
+    describe '#close_socket' do
+      it 'releases the port' do
+        handler.listen
+
+        handler.close_socket
+
+        expect { TCPServer.new('0.0.0.0', port).close }.not_to raise_error
+        handler.stop
+      end
+
+      it 'is a no-op when the port was never bound' do
+        expect { handler.close_socket }.not_to raise_error
       end
     end
   end

@@ -49,6 +49,11 @@ it:
         last_7_days: Last 7 days
         title: Discard Cleaner
         total: Total
+    concurrency_claims:
+      states:
+        granted: Concessa
+        promoted: Promossa
+        waiting: In attesa
     cron_entries:
       actions:
         confirm_disable: Sei sicuro di voler disabilitare questa voce cron?
@@ -199,6 +204,7 @@ it:
       job:
         arguments: Argomenti
         attempts: Tentativi
+        concurrency_claims: Richieste di concorrenza
         labels: Etichette
         priority: Priorità
         queue: Coda
@@ -234,17 +240,57 @@ it:
         value: Valore
     performance:
       index:
-        average_duration: Durata media
-        chart_title: Tempo totale di esecuzione in secondi
+        chart_title: Latenza di esecuzione totale in secondi
+        chart_title_queue: Latenza in coda media in secondi
+        chart_title_total: Latenza totale media in secondi
+        execution_latency: Latenza di esecuzione
         executions: Esecuzioni
         job_class: Classe del job
-        maximum_duration: Durata massima
-        minimum_duration: Durata minima
+        jobs: Job
+        no_executions: Nessuna esecuzione in questo intervallo di tempo.
+        queue_latency: Latenza in coda
         queue_name: Nome della coda
         title: Prestazioni
+        total_latency: Latenza totale
+      latency:
+        average: media
+        maximum: max
+        minimum: min
+      metric:
+        chart_metric: Metrica del grafico
+        metric_options:
+          execution: Latenza di esecuzione
+          queue: Latenza in coda
+          total: Latenza totale
+      range:
+        bucket_size:
+          days: "%{count}g"
+          hours: "%{count}h"
+          minutes: "%{count}m"
+          months: "~%{count} mese"
+          seconds: "%{count}s"
+          years: "~%{count}a"
+        chart_bucket_size: 'Dimensione dell’intervallo del grafico: %{size}'
+        custom_range: Personalizzato
+        custom_range_hint: trascina sul grafico
+        end_time: Ora di fine
+        open_time_ranges: Apri intervalli di tempo delle prestazioni
+        quick_ranges: Intervalli rapidi
+        range_options:
+          1h: Ultima ora
+          24h: Ultime 24 ore
+          6h: Ultime 6 ore
+          7d: Ultimi 7 giorni
+        reload_range: Ricarica i dati sulle prestazioni
+        start_time: Ora di inizio
+        time_range: Intervallo di tempo delle prestazioni
+        time_zone: 'Fuso orario:'
       show:
+        execution_chart_title: Latenza di esecuzione
+        queue_chart_title: Latenza in coda
         slow: Lento
         title: Prestazioni
+        total_chart_title: Latenza totale
     processes:
       index:
         cron_enabled: Cron abilitato

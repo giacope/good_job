@@ -2,6 +2,8 @@
 
 require "active_support/core_ext/numeric/time"
 
+require_relative "configuration/validator"
+
 module GoodJob
   #
   # +GoodJob::Configuration+ provides normalized configuration information to
@@ -12,7 +14,10 @@ module GoodJob
     # Valid execution modes.
     EXECUTION_MODES = [:async, :async_all, :async_server, :external, :inline].freeze
     # Default number of threads to use per {Scheduler}
-    DEFAULT_MAX_THREADS = 5
+    DEFAULT_THREADS = 5
+    # @deprecated Use {DEFAULT_THREADS} instead.
+    DEFAULT_MAX_THREADS = DEFAULT_THREADS
+    deprecate_constant :DEFAULT_MAX_THREADS
     # Default number of seconds between polls for jobs
     DEFAULT_POLL_INTERVAL = 10
     # Default poll interval for async in development environment
@@ -106,6 +111,12 @@ module GoodJob
       self.class.validate_dequeue_query_sort(dequeue_query_sort)
     end
 
+    # +valid?+ checks whether the configuration is valid, e.g. whether Cron
+    # entries reference Job classes that exist. Intended to be used in a
+    # test, for example: +expect(GoodJob.configuration).to be_valid+
+    # +errors+ contains any errors from the most recent call to +valid?+.
+    delegate :valid?, :errors, to: :validator
+
     # Specifies how and where jobs should be executed. See {Adapter#initialize}
     # for more details on possible values.
     # @return [Symbol]
@@ -132,18 +143,100 @@ module GoodJob
       end
     end
 
-    # Indicates the number of threads to use per {Scheduler}. Note that
+    # Indicates the default number of threads to use per {Scheduler}. Note that
     # {#queue_string} may provide more specific thread counts to use with
     # individual schedulers.
     # @return [Integer]
-    def max_threads
+    def threads
       (
-        options[:max_threads] ||
-          rails_config[:max_threads] ||
-          env['GOOD_JOB_MAX_THREADS'] ||
+        options[:threads] ||
+          rails_config[:threads] ||
+          env['GOOD_JOB_THREADS'] ||
+          deprecated_value(
+            replacement: "the `threads:` option, `config.good_job.threads`, or the `GOOD_JOB_THREADS` environment variable",
+            options_key: :max_threads,
+            rails_config_key: :max_threads,
+            env_var: 'GOOD_JOB_MAX_THREADS'
+          ) ||
           env['RAILS_MAX_THREADS'] ||
-          DEFAULT_MAX_THREADS
+          DEFAULT_THREADS
       ).to_i
+    end
+
+    # Number of fibers per {Scheduler}, overridden by counts in {#queue_string}.
+    # Zero, the default, executes jobs with threads.
+    # @return [Integer]
+    def fibers
+      (
+        options[:fibers] ||
+          rails_config[:fibers] ||
+          env['GOOD_JOB_FIBERS'] ||
+          0
+      ).to_i
+    end
+
+    # @deprecated Use {#threads} instead.
+    # @return [Integer]
+    def max_threads
+      threads
+    end
+
+    # The number of subprocesses to fork when running in cluster mode. When
+    # this is +0+ (the default), GoodJob runs entirely in the current process
+    # (the historical behavior). When it is +1+ or greater, the +good_job+
+    # command boots a {GoodJob::Supervisor} that forks and supervises this many
+    # {GoodJob::Subprocess}es, each running its own {GoodJob::Capsule}. Forking
+    # allows the operating system to share memory pages copy-on-write.
+    #
+    # When {#queue_string} contains pipe-delimited pools (e.g.
+    # +"elephant:2|mice:2"+), the count is instead derived from the number of
+    # pools (one subprocess per pool) and any configured count is ignored.
+    # @return [Integer]
+    def subprocesses
+      pools = queue_pools
+      return pools.size if pools.size > 1
+
+      configured_subprocesses
+    end
+
+    # Whether GoodJob should run in cluster mode, forking and supervising
+    # subprocesses. Requires a positive {#subprocesses} count and a platform
+    # that supports +Process.fork+ (i.e. not JRuby or Windows).
+    # @return [Boolean]
+    def cluster?
+      # +::Process+ must be fully qualified: inside the +GoodJob+ namespace a
+      # bare +Process+ resolves to the +GoodJob::Process+ ActiveRecord model.
+      subprocesses >= 1 && ::Process.respond_to?(:fork)
+    end
+
+    # One {GoodJob::Configuration} per subprocess the supervisor should fork.
+    # A pipe (+|+) in the queue configuration is a subprocess boundary: each
+    # pipe-delimited pool becomes its own subprocess whose {#queue_string} is
+    # that pool (still parsed with the usual +;+/+:+/+,+ syntax), and the count
+    # comes from the number of pools. Without a pipe, {#subprocesses} identical
+    # configurations are returned. The +|+ is never passed to the queue parser.
+    # @return [Array<GoodJob::Configuration>]
+    def subprocess_configs
+      pools = queue_pools
+      if pools.size > 1
+        if configured_subprocesses.positive?
+          GoodJob.logger.warn(
+            "GOOD_JOB_SUBPROCESSES (#{configured_subprocesses}) is ignored because GOOD_JOB_QUEUES defines #{pools.size} pipe-delimited subprocess pools."
+          )
+        end
+        pools.map { |pool| subprocess_config(pool) }
+      else
+        Array.new(subprocesses) { subprocess_config(queue_string) }
+      end
+    end
+
+    # The queue configuration with each pipe-delimited subprocess pool rewritten as
+    # a +;+-delimited scheduler group, so that a single process can serve every pool.
+    # A +|+ means nothing to the queue parser, so {MultiScheduler} builds its
+    # schedulers from this rather than from {#queue_string}.
+    # @return [String]
+    def flattened_queue_string
+      queue_pools.join(';')
     end
 
     # Describes which queues to execute jobs from and how those queues should
@@ -230,10 +323,15 @@ module GoodJob
       cron.map { |cron_key, params| GoodJob::CronEntry.new(params.merge(key: cron_key)) }
     end
 
+    # When the cron manager starts, enqueue cron jobs that were scheduled within this period of time.
+    # @return [ActiveSupport::Duration, nil]
     def cron_graceful_restart_period
-      options[:cron_graceful_restart_period] ||
-        rails_config[:cron_graceful_restart_period] ||
-        env['GOOD_JOB_CRON_GRACEFUL_RESTART_PERIOD']
+      value = (
+        options[:cron_graceful_restart_period] ||
+          rails_config[:cron_graceful_restart_period] ||
+          env['GOOD_JOB_CRON_GRACEFUL_RESTART_PERIOD']
+      ).to_i
+      value.positive? ? value.seconds : nil
     end
 
     # The number of queued jobs to select when polling for a job to run.
@@ -392,7 +490,7 @@ module GoodJob
       DEFAULT_ENABLE_PAUSES
     end
 
-    # Strategy for locking jobs during dequeue.
+    # Strategy for locking jobs during dequeue. Defaults to +:advisory+.
     # @return [Symbol]
     def lock_strategy
       (
@@ -412,6 +510,8 @@ module GoodJob
         self_caller = caller
         self_caller.grep(%r{config.ru}).any? || # EXAMPLE: config.ru:3:in `block in <main>' OR config.ru:3:in `new_from_string'
           self_caller.grep(%r{puma/request}).any? || # EXAMPLE: puma-5.6.4/lib/puma/request.rb:76:in `handle_request'
+          self_caller.grep(%r{puma/response}).any? || # EXAMPLE: puma-8.0.2/lib/puma/response.rb:78:in 'Puma::Response#handle_request'
+          self_caller.grep(%r{/puma/(?:cluster/worker|single)\.rb:\d+:}).any? || # EXAMPLE: puma-7.2.0/lib/puma/cluster/worker.rb:58:in `run' or puma-7.2.0/lib/puma/single.rb:44:in `run'
           self_caller.grep(%{/rack/handler/}).any? || # EXAMPLE: iodine-0.7.44/lib/rack/handler/iodine.rb:13:in `start'
           (Concurrent.on_jruby? && self_caller.grep(%r{jruby/rack/rails_booter}).any?) # EXAMPLE: uri:classloader:/jruby/rack/rails_booter.rb:83:in `load_environment'
       end || false
@@ -441,6 +541,61 @@ module GoodJob
     end
 
     private
+
+    # Reads a configuration value from one or more deprecated sources, emitting a
+    # deprecation warning (naming the +replacement+) when a value is found. This
+    # keeps "submerged" configuration—explicit options, Rails config, and
+    # environment variables—discoverable as they are renamed across releases.
+    #
+    # Deprecated sources are checked in the same precedence order as live
+    # configuration: options, then Rails config, then environment variable.
+    #
+    # @param replacement [String] human-readable description of what to use instead
+    # @param options_key [Symbol, nil] deprecated key in {#options}
+    # @param rails_config_key [Symbol, nil] deprecated key in +config.good_job+
+    # @param env_var [String, nil] deprecated environment variable name
+    # @return the found value, or +nil+ if none of the deprecated sources are set
+    def deprecated_value(replacement:, options_key: nil, rails_config_key: nil, env_var: nil)
+      source, value = if options_key && !options[options_key].nil?
+                        ["the `#{options_key}:` option", options[options_key]]
+                      elsif rails_config_key && !rails_config[rails_config_key].nil?
+                        ["`config.good_job.#{rails_config_key}`", rails_config[rails_config_key]]
+                      elsif env_var && !env[env_var].nil?
+                        ["the `#{env_var}` environment variable", env[env_var]]
+                      end
+      return if value.nil?
+
+      GoodJob.deprecator.warn("Configuring GoodJob with #{source} is deprecated. Use #{replacement} instead.")
+      value
+    end
+
+    # The pipe-delimited subprocess pools within the queue configuration, if any.
+    # @return [Array<String>]
+    def queue_pools
+      queue_string.split('|').map(&:strip).reject(&:empty?)
+    end
+
+    # The explicitly configured subprocess count (before pipe-pool derivation).
+    # @return [Integer]
+    def configured_subprocesses
+      (
+        options[:subprocesses] ||
+          rails_config[:subprocesses] ||
+          env['GOOD_JOB_SUBPROCESSES'] ||
+          0
+      ).to_i
+    end
+
+    # Builds a per-subprocess configuration that runs the given queue pool.
+    # @param queues [String]
+    # @return [GoodJob::Configuration]
+    def subprocess_config(queues)
+      self.class.new(options.merge(queues: queues), env: env)
+    end
+
+    def validator
+      @_validator ||= Validator.new(self)
+    end
 
     def rails_config
       Rails.application.config.good_job

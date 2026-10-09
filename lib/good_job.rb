@@ -17,7 +17,6 @@ require_relative "good_job/active_job_extensions/interrupt_errors"
 require_relative "good_job/active_job_extensions/labels"
 require_relative "good_job/active_job_extensions/notify_options"
 
-require_relative "good_job/overridable_connection"
 require_relative "good_job/bulk"
 require_relative "good_job/callable"
 require_relative "good_job/capsule"
@@ -29,13 +28,16 @@ require_relative "good_job/cron_manager"
 require_relative "good_job/current_thread"
 require_relative "good_job/daemon"
 require_relative "good_job/dependencies"
+require_relative "good_job/fiber_pool_executor"
 require_relative "good_job/job_performer"
 require_relative "good_job/job_performer/metrics"
+require_relative "good_job/lifecycle_hooks"
 require_relative "good_job/log_subscriber"
 require_relative "good_job/multi_scheduler"
 require_relative "good_job/notifier"
 require_relative "good_job/poller"
 require_relative "good_job/probe_server"
+require_relative "good_job/probe_server/cluster_healthcheck_middleware"
 require_relative "good_job/probe_server/healthcheck_middleware"
 require_relative "good_job/probe_server/not_found_app"
 require_relative "good_job/probe_server/simple_handler"
@@ -43,6 +45,8 @@ require_relative "good_job/probe_server/webrick_handler"
 require_relative "good_job/safe_state"
 require_relative "good_job/scheduler"
 require_relative "good_job/shared_executor"
+require_relative "good_job/subprocess"
+require_relative "good_job/supervisor"
 require_relative "good_job/systemd_service"
 require_relative "good_job/thread_status"
 
@@ -52,6 +56,14 @@ require_relative "good_job/thread_status"
 module GoodJob
   include GoodJob::Dependencies
   include GoodJob::ThreadStatus
+  include GoodJob::LifecycleHooks
+
+  # Built-in cluster lifecycle hooks. Inherited database connections must not be
+  # shared across a fork, so they are discarded both in the supervisor before it
+  # forks and in each subprocess before it boots; fresh connections are then
+  # established lazily. Registered first so they run before any application hook.
+  before_supervisor_fork { ActiveRecord::Base.connection_handler.clear_all_connections! }
+  before_subprocess_boot { ActiveRecord::Base.connection_handler.clear_all_connections! }
 
   # Default, null, blank value placeholder.
   NONE = Module.new.freeze
@@ -250,6 +262,8 @@ module GoodJob
         deleted_jobs_count += deleted_jobs
       end
 
+      GoodJob::ConcurrencyClaim.cleanup_orphaned if GoodJob::ConcurrencyClaim.table_exists?
+
       batches_query = GoodJob::BatchRecord.finished_before(timestamp).limit(in_batches_of)
       batches_query = batches_query.succeeded unless include_discarded
       loop do
@@ -315,8 +329,9 @@ module GoodJob
   # For use in tests/CI to validate GoodJob is up-to-date.
   # @return [Boolean]
   def self.migrated?
-    GoodJob::Job.lock_type_migrated? &&
-      GoodJob::Job.connection.index_name_exists?(:good_jobs, "index_good_jobs_on_unfinished_or_errored")
+    GoodJob::ConcurrencyClaim.connection_pool.with_connection do |connection|
+      connection.table_exists?(GoodJob::ConcurrencyClaim.table_name)
+    end
   end
 
   # Pause job execution for a given queue or job class.
@@ -341,8 +356,8 @@ module GoodJob
   # @param job_class [String, nil] Job class name to check
   # @param label [String, nil] Label to check
   # @return [Boolean]
-  def self.paused?(queue: nil, job_class: nil, label: nil)
-    GoodJob::Setting.paused?(queue: queue, job_class: job_class, label: label)
+  def self.paused?(active_job: nil, queue: nil, job_class: nil, label: nil)
+    GoodJob::Setting.paused?(active_job: active_job, queue: queue, job_class: job_class, label: label)
   end
 
   # Get a list of all paused queues and job classes

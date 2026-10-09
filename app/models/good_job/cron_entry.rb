@@ -13,6 +13,17 @@ module GoodJob # :nodoc:
 
     attr_reader :params
 
+    VALUE_TYPES = {
+      args: Array,
+      kwargs: Hash,
+      set: Hash,
+    }.freeze
+
+    validate :validate_cron_key
+    validate :validate_cron_schedule
+    validate :validate_job_class
+    validate :validate_value_types
+
     def self.all(configuration: nil)
       configuration ||= GoodJob.configuration
       configuration.cron_entries
@@ -28,8 +39,8 @@ module GoodJob # :nodoc:
 
       join_clause = <<~SQL.squish
         CROSS JOIN LATERAL (
-          SELECT * FROM good_jobs
-          WHERE good_jobs.cron_key = cron_keys.cron_key
+          SELECT * FROM #{GoodJob::Job.quoted_table_name}
+          WHERE #{GoodJob::Job.quoted_table_name}.cron_key = cron_keys.cron_key
           ORDER BY cron_at DESC NULLS LAST
           LIMIT 1
         ) AS lateral_jobs
@@ -50,20 +61,17 @@ module GoodJob # :nodoc:
 
     def initialize(params = {})
       @params = params
-
-      return if cron_proc?
-      raise ArgumentError, "Invalid cron format: '#{cron}'" unless fugit.instance_of?(Fugit::Cron)
     end
 
     def key
-      params.fetch(:key)
+      params[:key]
     end
 
     alias id key
     alias to_param key
 
     def job_class
-      params.fetch(:class)
+      params[:class]
     end
 
     def set
@@ -86,12 +94,12 @@ module GoodJob # :nodoc:
       if cron_proc?
         result = Rails.application.executor.wrap { cron.call(previously_at || last_job_at) }
         if result.is_a?(String)
-          Fugit.parse(result).next_time.to_t
+          parse_cron_string(result)&.next_time&.to_t
         else
           result
         end
       else
-        fugit.next_time.to_t
+        fugit&.next_time&.to_t
       end
     end
 
@@ -99,12 +107,14 @@ module GoodJob # :nodoc:
       if cron_proc?
         result = Rails.application.executor.wrap { cron.call(previously_at || last_job_at) }
         if result.is_a?(String)
-          Fugit.parse(result).within(period).map(&:to_t)
+          parse_cron_string(result)&.within(period)&.map(&:to_t) || []
         else
-          result
+          # A proc that returns a Time is called with the previous run's time, so when cron starts,
+          # CronManager#create_task already enqueues every run missed since the last job.
+          []
         end
       else
-        fugit.within(period).map(&:to_t)
+        fugit&.within(period)&.map(&:to_t) || []
       end
     end
 
@@ -126,8 +136,7 @@ module GoodJob # :nodoc:
         current_thread.cron_at = cron_at
 
         I18n.with_locale(I18n.default_locale) do
-          job_klass = job_class_value
-          job_klass = job_klass.constantize if job_klass.is_a?(String)
+          job_klass = resolve_job_class
           next unless job_klass.is_a?(Class)
 
           configured_job = job_klass.set(set_value)
@@ -151,7 +160,7 @@ module GoodJob # :nodoc:
     end
 
     def display_schedule
-      cron_proc? ? display_property(cron) : fugit.original
+      fugit ? fugit.original : display_property(cron)
     end
 
     def jobs
@@ -175,8 +184,41 @@ module GoodJob # :nodoc:
 
     private
 
+    def validate_cron_key
+      errors.add(:key, "must be a Symbol") unless key.is_a?(Symbol)
+    end
+
+    def validate_cron_schedule
+      return if cron_proc?
+      return if fugit.instance_of?(Fugit::Cron)
+
+      errors.add(:cron, "'#{cron}' is not a valid schedule")
+    end
+
+    def validate_job_class
+      return if job_class.blank? || job_class.is_a?(Class) || job_class.respond_to?(:call)
+
+      resolve_job_class
+    rescue NameError
+      errors.add(:class, "'#{job_class}' does not exist")
+    end
+
+    def validate_value_types
+      VALUE_TYPES.each do |attribute, type|
+        value = public_send(attribute)
+        next if value.blank? || value.respond_to?(:call) || value.is_a?(type)
+
+        errors.add(attribute, "must be a #{type}")
+      end
+    end
+
+    def resolve_job_class
+      value = job_class_value
+      value.is_a?(String) ? value.constantize : value
+    end
+
     def cron
-      params.fetch(:cron)
+      params[:cron]
     end
 
     def cron_proc?
@@ -184,7 +226,14 @@ module GoodJob # :nodoc:
     end
 
     def fugit
-      @_fugit ||= Fugit.parse(cron)
+      return @_fugit if defined?(@_fugit)
+
+      @_fugit = parse_cron_string(cron)
+    end
+
+    def parse_cron_string(string)
+      schedule = Fugit.parse(string)
+      schedule if schedule.instance_of?(Fugit::Cron)
     end
 
     def job_class_value

@@ -12,30 +12,33 @@ module GoodJob
       10**8 # About 3 years
     ].freeze
 
-    def initialize(job_class)
+    def initialize(job_class, range = GoodJob::PerformanceRange.new, metric = GoodJob::LatencyMetric.default)
       super()
       @job_class = job_class
+      @range = range
+      @metric = metric
     end
 
     def data
       table_name = GoodJob::Execution.table_name
 
       interval_entries = BUCKET_INTERVALS.map { "interval '#{_1}'" }.join(",")
+      bucket_expression = "WIDTH_BUCKET(#{@metric.expression}, ARRAY[#{interval_entries}])"
       sum_query = <<~SQL.squish
         SELECT
-          WIDTH_BUCKET(duration, ARRAY[#{interval_entries}]) as bucket_index,
-          COUNT(WIDTH_BUCKET(duration, ARRAY[#{interval_entries}])) AS count
+          #{bucket_expression} as bucket_index,
+          COUNT(#{bucket_expression}) AS count
         FROM #{table_name} sources
         WHERE
-          scheduled_at > $1::timestamp
+          scheduled_at >= $1::timestamp
           AND scheduled_at < $2::timestamp
           AND job_class = $3
-          AND duration IS NOT NULL
+          AND #{@metric.presence_sql}
         GROUP BY bucket_index
       SQL
 
       binds = [
-        *start_end_binds,
+        *@range.start_end_binds,
         @job_class,
       ]
       labels = BUCKET_INTERVALS.map { |interval| GoodJob::ApplicationController.helpers.format_duration(interval) }
@@ -59,6 +62,12 @@ module GoodJob
           }],
         },
         options: {
+          plugins: {
+            title: {
+              display: true,
+              text: @metric.histogram_title,
+            },
+          },
           scales: {
             y: {
               beginAtZero: true,

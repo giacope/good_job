@@ -42,11 +42,14 @@ module GoodJob
     # @!macro notification_responder
     def scheduler_create_pool(event)
       max_threads = event.payload[:max_threads]
+      max_fibers = event.payload[:max_fibers]
       performer_name = event.payload[:performer_name]
       process_id = event.payload[:process_id]
+      capacity = "max_threads=#{max_threads}"
+      capacity += " max_fibers=#{max_fibers}" if max_fibers
 
       info(tags: [process_id]) do
-        "GoodJob #{GoodJob::VERSION} started scheduler with queues=#{performer_name} max_threads=#{max_threads}."
+        "GoodJob #{GoodJob::VERSION} started scheduler with queues=#{performer_name} #{capacity}."
       end
     end
 
@@ -97,6 +100,84 @@ module GoodJob
 
       info(tags: [process_id]) do
         "GoodJob scheduler has restarted."
+      end
+    end
+
+    # @!macro notification_responder
+    def cluster_start(event)
+      subprocesses = event.payload[:subprocesses]
+
+      info do
+        "GoodJob #{GoodJob::VERSION} started supervisor with subprocesses=#{subprocesses}."
+      end
+    end
+
+    # @!macro notification_responder
+    def cluster_spawn(event)
+      pid = event.payload[:pid]
+
+      info do
+        "GoodJob supervisor forked subprocess (PID: #{pid})."
+      end
+    end
+
+    # @!macro notification_responder
+    def cluster_reap(event)
+      pid = event.payload[:pid]
+      status = event.payload[:status]
+      signal = event.payload[:signal]
+
+      info do
+        exit_description = if signal
+                             "signal: #{::Signal.signame(signal) || signal}"
+                           else
+                             "exit status: #{status.inspect}"
+                           end
+        "GoodJob supervisor reaped subprocess (PID: #{pid}, #{exit_description})."
+      end
+    end
+
+    # @!macro notification_responder
+    def cluster_backoff(event)
+      restart_count = event.payload[:restart_count]
+      delay = event.payload[:delay]
+
+      warn do
+        "GoodJob supervisor is delaying the replacement of a repeatedly exiting subprocess by #{delay} seconds (consecutive unhealthy exits: #{restart_count})."
+      end
+    end
+
+    # @!macro notification_responder
+    def cluster_shutdown(event) # rubocop:disable Lint/UnusedMethodArgument
+      info do
+        "GoodJob supervisor is shut down."
+      end
+    end
+
+    # @!macro notification_responder
+    def subprocess_start(event)
+      pid = event.payload[:pid]
+
+      info do
+        "GoodJob started subprocess (PID: #{pid})."
+      end
+    end
+
+    # @!macro notification_responder
+    def subprocess_shutdown_start(event)
+      pid = event.payload[:pid]
+
+      info do
+        "GoodJob shutting down subprocess (PID: #{pid})..."
+      end
+    end
+
+    # @!macro notification_responder
+    def subprocess_shutdown(event)
+      pid = event.payload[:pid]
+
+      info do
+        "GoodJob subprocess is shut down (PID: #{pid})."
       end
     end
 
