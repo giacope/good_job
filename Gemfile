@@ -3,6 +3,9 @@
 source 'https://rubygems.org'
 git_source(:github) { |repo| "https://github.com/#{repo}.git" }
 
+# Pin Ruby for development and the demo app (e.g. Heroku); gemfiles/ for the CI matrix set RAILS_VERSION and use their own Ruby
+ruby file: File.expand_path(".ruby-version", __dir__) unless ENV["RAILS_VERSION"]
+
 # Declare your gem's dependencies in good_job.gemspec.
 # Bundler will treat runtime dependencies like base dependencies, and
 # development dependencies will be added by default to the :development group.
@@ -16,6 +19,11 @@ gemspec
 gem 'activerecord-jdbcpostgresql-adapter', platforms: [:jruby]
 gem 'pg', platforms: [:mri, :windows]
 
+# Optional dependency for fiber execution. A plain conditional (not install_if)
+# keeps async out of dependency resolution on Rubies it does not support.
+fiber_capable_ruby = RUBY_ENGINE == "ruby" && Gem.ruby_version >= Gem::Version.new("3.2")
+gem 'async', ENV.fetch('GOOD_JOB_TEST_ASYNC', '>= 2.25'), '< 3', require: false if fiber_capable_ruby && ENV['GOOD_JOB_TEST_ASYNC'] != 'absent'
+
 # rdoc >= 8.0 hard-depends on rbs, whose native extension doesn't build on JRuby
 # (github.com/ruby/rdoc/issues/1746). rbs only ships a working (precompiled java
 # platform) build starting with this prerelease. Remove once rbs ships a stable
@@ -26,9 +34,9 @@ rails_versions = {
   "6.1" => { github: "rails/rails", branch: "6-1-stable" }, # https://github.com/bensheldon/good_job/issues/1280
   "7.0" => { github: "rails/rails", branch: "7-0-stable" }, # Ruby 3.4 requires bigdecimal which rails doesn't declare
   "7.1" => "~> 7.1.0",
-  "7.2" => "~> 7.2.0",
+  "7.2" => "~> 7.2.4",
   "8.0" => "~> 8.0.0",
-  "8.1" => "~> 8.1.0",
+  "8.1" => "~> 8.1.4",
   "head" => { github: "rails/rails", branch: "main" },
 }
 gem 'rails', rails_versions[ENV.fetch("RAILS_VERSION", "8.1")]
@@ -43,7 +51,8 @@ platforms :ruby do
   gem "dotenv-rails"
   gem "foreman"
   gem "gem-release"
-  gem "github_changelog_generator", require: false
+  # Exclude its transitive Async dependency from compatibility tests.
+  gem "github_changelog_generator", require: false unless ENV['GOOD_JOB_TEST_ASYNC']
   gem "rdoc", require: false
   gem "warning"
 
@@ -61,7 +70,7 @@ platforms :ruby do
     gem "brakeman"
     gem "easy_translate"
     gem "erb_lint"
-    gem "herb"
+    gem "herb", require: false
     gem "i18n-tasks"
     gem "mdl"
     gem "rubocop"

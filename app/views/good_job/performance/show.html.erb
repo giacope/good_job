@@ -1,5 +1,9 @@
-<div class="border-bottom">
+<div class="border-bottom mb-3">
   <h2 class="pt-3 pb-2"><%= t ".title" %> - <%= @job_class %></h2>
 </div>
 
-<%= render 'good_job/shared/chart_container', chart_data: GoodJob::PerformanceShowChart.new(@job_class).data %>
+<%= render "range", performance_range: @performance_range, range_context: @performance_range_context, range_path: performance_path(@job_class, locale: nil) %>
+
+<% @charts.each do |metric_key, chart_data| %>
+  <%= render 'good_job/shared/chart_container', chart_data: chart_data, region: "#{metric_key.to_s.dasherize}-chart" %>
+<% end %>
