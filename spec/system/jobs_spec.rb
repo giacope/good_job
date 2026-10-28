@@ -9,21 +9,21 @@ describe 'Jobs', :js, :without_executor do
 
   it 'renders chart js' do
     visit good_job.jobs_path
-    expect(page).to have_content 'GoodJob 👍'
+    expect(page).to have_text 'GoodJob 👍'
   end
 
   it 'renders each top-level page successfully' do
     visit good_job.jobs_path
-    expect(page).to have_content 'GoodJob 👍'
+    expect(page).to have_text 'GoodJob 👍'
 
     click_link "Jobs"
-    expect(page).to have_content 'GoodJob 👍'
+    expect(page).to have_text 'GoodJob 👍'
 
     click_link "Cron"
-    expect(page).to have_content 'GoodJob 👍'
+    expect(page).to have_text 'GoodJob 👍'
 
     click_link "Processes"
-    expect(page).to have_content 'GoodJob 👍'
+    expect(page).to have_text 'GoodJob 👍'
   end
 
   describe 'Jobs' do
@@ -62,7 +62,7 @@ describe 'Jobs', :js, :without_executor do
 
         table = page.find("[role=table]")
         expect(table).to have_css("[role=row]", count: 1)
-        expect(table).to have_content(foo_queue_job.job_id)
+        expect(table).to have_text(foo_queue_job.job_id)
       end
 
       it "can filter by state" do
@@ -77,7 +77,7 @@ describe 'Jobs', :js, :without_executor do
 
         expect(page).to have_css("[role=table] [role=row]", count: 2)
         within("[role=table]") do
-          expect(page).to have_content(foo_queue_job.job_id)
+          expect(page).to have_text(foo_queue_job.job_id)
         end
       end
 
@@ -90,7 +90,7 @@ describe 'Jobs', :js, :without_executor do
 
         expect(page).to have_css("[role=table] [role=row]", count: 1)
         within("[role=table]") do
-          expect(page).to have_content(foo_queue_job.job_id)
+          expect(page).to have_text(foo_queue_job.job_id)
         end
       end
 
@@ -104,10 +104,10 @@ describe 'Jobs', :js, :without_executor do
         select "mice", from: "job_queue_filter"
         expect(page).to have_current_path(/queue_name=mice&job_class=ConfigurableQueueJob/)
 
-        expect(page).to have_content("No jobs found.")
+        expect(page).to have_text("No jobs found.")
 
         select "foo", from: "job_queue_filter"
-        expect(page).to have_content(foo_queue_job.job_id)
+        expect(page).to have_text(foo_queue_job.job_id)
       end
 
       it 'can search by argument' do
@@ -135,7 +135,7 @@ describe 'Jobs', :js, :without_executor do
 
         table = page.find("[role=table]")
         expect(table).to have_css("[role=row]", count: 1)
-        expect(table).to have_content(labeled_job.job_id)
+        expect(table).to have_text(labeled_job.job_id)
       end
 
       it "can filter by label via badge link" do
@@ -153,19 +153,37 @@ describe 'Jobs', :js, :without_executor do
 
         table = page.find("[role=table]")
         expect(table).to have_css("[role=row]", count: 1)
-        expect(table).to have_content(labeled_job.job_id)
+        expect(table).to have_text(labeled_job.job_id)
       end
 
-      it "renders long labels truncated with a tooltip showing the full label" do
+      it "renders full labels under the job name with a tooltip showing the full label" do
         long_label = "a_very_long_label_that_exceeds_the_badge_width"
-        ExampleJob.set(wait: 10.minutes, good_job_labels: [long_label]).perform_later
+        labeled_job = ExampleJob.set(wait: 10.minutes, good_job_labels: [long_label]).perform_later
 
         visit good_job.jobs_path
         wait_for_turbo_load
 
-        expect(page).to have_css("a.badge[data-bs-toggle='tooltip']", text: "a_very_long_...")
-        expect(page).to have_css("a.badge[data-bs-original-title='#{long_label}']")
+        within("##{dom_id(GoodJob::Job.find_by(active_job_id: labeled_job.job_id))} [role=group]") do
+          expect(page).to have_css("a.badge.text-truncate[data-bs-toggle='tooltip']", exact_text: long_label)
+          expect(page).to have_css("a.badge[data-bs-original-title='#{long_label}']")
+        end
       end
+    end
+
+    it 'loads execution details on demand' do
+      execution = discarded_job.executions.order(:created_at).last
+      visit good_job.job_path(discarded_job)
+      wait_for_turbo_load
+
+      within "##{dom_id(execution)}" do
+        click_on 'Full Trace'
+        expect(page).to have_css "##{dom_id(execution, :full_pane)}", text: execution.error_backtrace.last
+
+        click_on 'Inspect'
+      end
+      # Lazy frames load once scrolled into view
+      scroll_to find("##{dom_id(execution, :params)}")
+      expect(page).to have_css "##{dom_id(execution, :params)}", text: '"job_class": "ExampleJob"'
     end
 
     it 'can retry discarded jobs' do
@@ -177,7 +195,7 @@ describe 'Jobs', :js, :without_executor do
           click_button 'Actions'
           accept_confirm { click_on 'Retry job' }
         end
-        expect(page).to have_content "Job has been retried"
+        expect(page).to have_text "Job has been retried"
       end.to change { discarded_job.reload.status }.from(:discarded).to(:queued)
     end
 
@@ -190,7 +208,7 @@ describe 'Jobs', :js, :without_executor do
           click_button 'Actions'
           accept_confirm { click_on 'Discard job' }
         end
-        expect(page).to have_content :all, "Job has been discarded"
+        expect(page).to have_text :all, "Job has been discarded"
       end.to change { unfinished_job.reload.finished_at }.from(nil).to within(1.second).of(Time.current)
     end
 
@@ -205,7 +223,7 @@ describe 'Jobs', :js, :without_executor do
           click_button 'Actions'
           accept_confirm { click_on 'Force discard' }
         end
-        expect(page).to have_content :all, "Job has been force discarded"
+        expect(page).to have_text :all, "Job has been force discarded"
       end.to change { unfinished_job.reload.finished_at }.from(nil).to within(1.second).of(Time.current)
     end
 
@@ -217,7 +235,7 @@ describe 'Jobs', :js, :without_executor do
         click_button 'Actions'
         accept_confirm { click_on 'Destroy job' }
       end
-      expect(page).to have_content "Job has been destroyed"
+      expect(page).to have_text "Job has been destroyed"
       expect { discarded_job.reload }.to raise_error(ActiveRecord::RecordNotFound)
     end
 

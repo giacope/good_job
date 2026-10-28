@@ -37,18 +37,23 @@ pt-BR:
         no_batches_found: Nenhum lote encontrado.
     cleaner:
       index:
-        all: All
-        class: Class
-        exception: Exception
-        grouped_by_class: Discards grouped by Class
-        grouped_by_exception: Discards grouped by Exception
-        last_1_hour: Last 1 hour
-        last_24_hours: Last 24 hours
-        last_3_days: Last 3 days
-        last_3_hours: Last 3 hours
-        last_7_days: Last 7 days
-        title: Discard Cleaner
+        all: Tudo
+        class: Classe
+        exception: Exceção
+        grouped_by_class: Descartes agrupados por Classe
+        grouped_by_exception: Descartes agrupados por Exceção
+        last_1_hour: Última hora
+        last_24_hours: Últimas 24 horas
+        last_3_days: Últimos 3 dias
+        last_3_hours: Últimas 3 horas
+        last_7_days: Últimos 7 dias
+        title: Limpeza de Descartes
         total: Total
+    concurrency_claims:
+      states:
+        granted: Concedida
+        promoted: Promovida
+        waiting: Aguardando
     cron_entries:
       actions:
         confirm_disable: Tem certeza de que deseja desativar esta tarefa programada?
@@ -137,12 +142,12 @@ pt-BR:
         reschedule: Reagendar tarefa
         retry: Tentar tarefa novamente
       destroy:
-        notice: A tarefa foi excluida.
+        notice: A tarefa foi excluída.
       discard:
         notice: A tarefa foi descartada.
       executions:
-        application_trace: Application Trace
-        full_trace: Full Trace
+        application_trace: Trace da aplicação
+        full_trace: Trace completo
         in_queue: na fila
         recovery: recuperação
         runtime: tempo de execução
@@ -170,7 +175,7 @@ pt-BR:
           destroy_all: Excluir tudo
           discard_all: Descartar tudo
           reschedule_all: Reagendar tudo
-          retry_all: Tentar novamente tudo
+          retry_all: Tentar tudo novamente
           title: Ações
         no_jobs_found: Nenhuma tarefa encontrada.
         toggle_actions: Alternar Ações
@@ -199,6 +204,7 @@ pt-BR:
       job:
         arguments: Argumentos
         attempts: Tentativas
+        concurrency_claims: Reservas de concorrência
         labels: Rótulos
         priority: Prioridade
         queue: Fila
@@ -224,7 +230,7 @@ pt-BR:
         confirm_pause: Tem certeza que deseja pausar %{value}?
         confirm_unpause: Tem certeza que deseja retomar %{value}?
         disabled: O recurso experimental de Pausas do GoodJob está desativado por padrão porque pode degradar o desempenho. Configure para ativar
-        job_class: Classe do trabalho
+        job_class: Classe da tarefa
         label: Rótulo
         pause: Pausar
         queue: Fila
@@ -234,17 +240,59 @@ pt-BR:
         value: Valor
     performance:
       index:
-        average_duration: Duração média
-        chart_title: Tempo total de execução em segundos
+        chart_title: Latência de execução total em segundos
+        chart_title_queue: Latência na fila média em segundos
+        chart_title_total: Latência total média em segundos
+        execution_latency: Latência de execução
         executions: Execuções
-        job_class: Classe do trabalho
-        maximum_duration: Duração máxima
-        minimum_duration: Duração mínima
+        job_class: Classe da tarefa
+        jobs: Tarefas
+        no_executions: Nenhuma execução neste intervalo de tempo.
+        queue_latency: Latência na fila
         queue_name: Nome da fila
         title: Desempenho
+        total_latency: Latência total
+      latency:
+        average: méd
+        maximum: máx
+        minimum: mín
+      metric:
+        chart_metric: Métrica do gráfico
+        metric_options:
+          execution: Latência de execução
+          queue: Latência na fila
+          total: Latência total
+      range:
+        bucket_size:
+          days: "%{count}d"
+          hours: "%{count}h"
+          minutes: "%{count}m"
+          months:
+            one: "~%{count} mês"
+            other: "~%{count} meses"
+          seconds: "%{count}s"
+          years: "~%{count}a"
+        chart_bucket_size: 'Granularidade temporal do gráfico: %{size}'
+        custom_range: Personalizado
+        custom_range_hint: arraste no gráfico
+        end_time: Horário de término
+        open_time_ranges: Abrir intervalos de tempo de desempenho
+        quick_ranges: Intervalos rápidos
+        range_options:
+          1h: Última hora
+          24h: Últimas 24 horas
+          6h: Últimas 6 horas
+          7d: Últimos 7 dias
+        reload_range: Recarregar dados de desempenho
+        start_time: Horário de início
+        time_range: Intervalo de tempo de desempenho
+        time_zone: 'Fuso horário:'
       show:
+        execution_chart_title: Latência de execução
+        queue_chart_title: Latência na fila
         slow: Lento
         title: Desempenho
+        total_chart_title: Latência total
     processes:
       index:
         cron_enabled: Agendamento ativado
@@ -271,8 +319,8 @@ pt-BR:
         search: Pesquisar
       navbar:
         batches: Lotes
-        cleaner: Discard Cleaner
-        cron_schedules: Agendamentos
+        cleaner: Limpeza de Descartes
+        cron_schedules: Tarefas Programadas
         jobs: Tarefas
         live_poll: Acompanhamento ao Vivo
         name: "GoodJob 👍"
@@ -286,7 +334,7 @@ pt-BR:
           theme: Tema
       pending_migrations: O GoodJob tem migrações pendentes no banco de dados.
       secondary_navbar:
-        inspiration: Lembre-se, você também está fazendo uma Boa Tarefa!
+        inspiration: Lembre-se, você também está fazendo um Bom Trabalho!
         last_updated: Última atualização
     status:
       discarded: Descartado

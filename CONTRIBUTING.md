@@ -19,7 +19,10 @@ For gem development and debugging information, please review the [README's Gem D
   - Update `GoodJob.migrated?` to check for the latest migration change. It only needs to check the last change because migrations are expected to run in order.
   - Add an entry to `spec/integration/breaking_migrations_spec.rb` to smoke-test that the new column is handled gracefully when absent.
   - Some Active Record features are difficult to make safe, e.g. `enum`, which raises at schema load time when the backing column does not exist.
+- When converting dynamic configuration into a value, call the method `resolve_[property]`. For example, if the configuration takes a constantizable string or a callable proc that needs to, at some point, be evaluated into a usable value.
 
 ## Other Errata
 
 - **Active Record `attribute` cannot be used.** Calling `attribute` (the AR attributes API) necessitates a database connection when Tapioca runs its DSL compilers, which breaks Tapioca's type generation. Use explicit accessor methods instead.
+- **Use Timecop instead of Rails' time test helpers.** Rails'. When time traveling, Timecop allows time to advance whereas `travel_to` freezes the clock. Behavior under test may depend on time advancing (e.g. `wait_until` timeouts, scheduled tasks).
+- **Run specs in parallel with `bin/parallel_rspec`.** Set up the per-process test databases once with `bundle exec rake parallel:create parallel:load_schema`. In a git worktree, test database names are suffixed with the worktree name (e.g. `good_job_test_myworktree2`) so concurrent worktrees do not collide. `bin/teardown` drops this checkout's test databases. Use `RUN_SERIALLY=1` to run the `parallel:*` database tasks one at a time.

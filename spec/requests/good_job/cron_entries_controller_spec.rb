@@ -13,6 +13,7 @@ describe GoodJob::CronEntriesController do
   describe 'PUT #disable' do
     it 'disables cron' do
       cron_entry = GoodJob::CronEntry.find(:example)
+      cron_entry.enable
       expect do
         put good_job.disable_cron_entry_path(cron_key: 'example')
       end.to change { cron_entry.enabled? }.from(true).to(false)
@@ -44,13 +45,16 @@ describe GoodJob::CronEntriesController do
     end
 
     it 'uses the application I18n.default_locale' do
-      original_locale = I18n.default_locale
-      I18n.default_locale = :de
+      original_default_locale = I18n.default_locale
+      # with_locale restores the starting locale, which enqueuing within I18n.with_locale would otherwise replace
+      I18n.with_locale(I18n.locale) do
+        I18n.default_locale = :de
 
-      post good_job.enqueue_cron_entry_path(cron_key: 'example')
-      expect(GoodJob::Job.last.serialized_params).to include("locale" => "de")
-    ensure
-      I18n.default_locale = original_locale
+        post good_job.enqueue_cron_entry_path(cron_key: 'example')
+        expect(GoodJob::Job.last.serialized_params).to include("locale" => "de")
+      ensure
+        I18n.default_locale = original_default_locale
+      end
     end
   end
 end

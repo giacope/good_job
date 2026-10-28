@@ -19,6 +19,7 @@ module ExampleAppHelper
 
     FileUtils.rm_rf("#{example_app_path}/config/initializers/assets.rb")
     FileUtils.cp(::Rails.root.join('config/database.yml'), "#{example_app_path}/config/database.yml")
+    FileUtils.cp(::Rails.root.join('config/git_worktree.rb'), "#{example_app_path}/config/git_worktree.rb")
 
     File.open("#{example_app_path}/Gemfile", 'a') do |f|
       f.puts %{gem "good_job", path: "#{File.dirname(__FILE__)}/../../../"}
@@ -65,6 +66,7 @@ module ExampleAppHelper
       good_job_executions
       good_job_processes
       good_job_settings
+      good_job_concurrency_claims
     ]
     models = [
       GoodJob::Job,
@@ -72,6 +74,7 @@ module ExampleAppHelper
       GoodJob::BatchRecord,
       GoodJob::Process,
       GoodJob::Setting,
+      GoodJob::ConcurrencyClaim,
     ]
     quiet do
       tables.each do |table_name|
@@ -104,7 +107,7 @@ module ExampleAppHelper
   end
 
   def app_name
-    'example_app'
+    "example_app#{GitWorktree.db_suffix}#{ENV.fetch('TEST_ENV_NUMBER', nil)}"
   end
 end
 

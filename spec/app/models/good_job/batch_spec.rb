@@ -208,6 +208,7 @@ describe GoodJob::Batch do
 
     context 'with concurrency-limited jobs' do
       before do
+        allow(GoodJob.deprecator).to receive(:warn)
         stub_const 'ConcurrencyJob', (Class.new(ActiveJob::Base) do
           include GoodJob::ActiveJobExtensions::Concurrency
 
@@ -239,6 +240,17 @@ describe GoodJob::Batch do
 
         # total_limit: 1 means only the first should succeed;
         # the second is silently dropped (matching Bulk::Buffer behavior).
+        expect(GoodJob::Job.where(batch_id: batch.id).count).to eq 1
+      end
+
+      it 'respects labelled concurrency rules' do
+        ConcurrencyJob.good_job_concurrency_config = {}
+        ConcurrencyJob.good_job_labels = ['concurrency_test']
+        ConcurrencyJob.good_job_concurrency_rule(label: 'concurrency_test', total_limit: 1)
+        batch = described_class.new
+
+        described_class.enqueue_all([[batch, [ConcurrencyJob.new, ConcurrencyJob.new]]])
+
         expect(GoodJob::Job.where(batch_id: batch.id).count).to eq 1
       end
     end

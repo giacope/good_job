@@ -2,7 +2,14 @@ require_relative 'boot'
 
 require 'logger' # Before rails: https://github.com/rails/rails/pull/54264
 
-require 'rails/all'
+require "rails"
+# Load only the frameworks the demo uses; skipping ActionCable, ActionMailer,
+# ActionMailbox, ActionText, and ActiveStorage reduces memory usage
+require "active_record/railtie"
+require "active_job/railtie"
+require "action_controller/railtie"
+require "action_view/railtie"
+require "rails/test_unit/railtie"
 require "good_job"
 require "good_job/engine"
 
@@ -22,6 +29,10 @@ module TestApp
     config.log_formatter = ThreadNameFormatter.new
 
     config.active_job.queue_adapter = :good_job
+
+    if defined?(ActiveSupport::IsolatedExecutionState) && GoodJob::Configuration.new({}).fibers.positive?
+      config.active_support.isolation_level = :fiber
+    end
 
     # config.middleware.insert_before Rack::Sendfile, ActionDispatch::DebugLocks
     config.log_level = :debug

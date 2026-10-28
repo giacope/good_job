@@ -5,7 +5,9 @@ require "active_job/queue_adapters"
 
 require_relative "good_job/version"
 require_relative "good_job/engine"
+require_relative "good_job/ractors"
 
+require_relative "good_job/instance_registry"
 require_relative "good_job/adapter"
 require_relative "good_job/adapter/inline_buffer"
 require_relative "active_job/queue_adapters/good_job_adapter"
@@ -17,7 +19,6 @@ require_relative "good_job/active_job_extensions/interrupt_errors"
 require_relative "good_job/active_job_extensions/labels"
 require_relative "good_job/active_job_extensions/notify_options"
 
-require_relative "good_job/overridable_connection"
 require_relative "good_job/bulk"
 require_relative "good_job/callable"
 require_relative "good_job/capsule"
@@ -29,13 +30,16 @@ require_relative "good_job/cron_manager"
 require_relative "good_job/current_thread"
 require_relative "good_job/daemon"
 require_relative "good_job/dependencies"
+require_relative "good_job/fiber_pool_executor"
 require_relative "good_job/job_performer"
 require_relative "good_job/job_performer/metrics"
+require_relative "good_job/lifecycle_hooks"
 require_relative "good_job/log_subscriber"
 require_relative "good_job/multi_scheduler"
 require_relative "good_job/notifier"
 require_relative "good_job/poller"
 require_relative "good_job/probe_server"
+require_relative "good_job/probe_server/cluster_healthcheck_middleware"
 require_relative "good_job/probe_server/healthcheck_middleware"
 require_relative "good_job/probe_server/not_found_app"
 require_relative "good_job/probe_server/simple_handler"
@@ -43,6 +47,8 @@ require_relative "good_job/probe_server/webrick_handler"
 require_relative "good_job/safe_state"
 require_relative "good_job/scheduler"
 require_relative "good_job/shared_executor"
+require_relative "good_job/subprocess"
+require_relative "good_job/supervisor"
 require_relative "good_job/systemd_service"
 require_relative "good_job/thread_status"
 
@@ -52,6 +58,14 @@ require_relative "good_job/thread_status"
 module GoodJob
   include GoodJob::Dependencies
   include GoodJob::ThreadStatus
+  include GoodJob::LifecycleHooks
+
+  # Built-in cluster lifecycle hooks. Inherited database connections must not be
+  # shared across a fork, so they are discarded both in the supervisor before it
+  # forks and in each subprocess before it boots; fresh connections are then
+  # established lazily. Registered first so they run before any application hook.
+  before_supervisor_fork { ActiveRecord::Base.connection_handler.clear_all_connections! }
+  before_subprocess_boot { ActiveRecord::Base.connection_handler.clear_all_connections! }
 
   # Default, null, blank value placeholder.
   NONE = Module.new.freeze
@@ -66,7 +80,8 @@ module GoodJob
   #   @return [ActiveRecord::Base]
   #   @example Change the base class:
   #     GoodJob.active_record_parent_class = "CustomApplicationRecord"
-  mattr_accessor :active_record_parent_class, default: nil
+  singleton_class.attr_accessor :active_record_parent_class
+  self.active_record_parent_class = nil
 
   # @!attribute [rw] logger
   #   @!scope class
@@ -75,7 +90,8 @@ module GoodJob
   #   @return [Logger, nil]
   #   @example Output GoodJob logs to a file:
   #     GoodJob.logger = ActiveSupport::TaggedLogging.new(ActiveSupport::Logger.new("log/my_logs.log"))
-  mattr_accessor :logger, default: DEFAULT_LOGGER
+  singleton_class.attr_accessor :logger
+  self.logger = DEFAULT_LOGGER
 
   # @!attribute [rw] preserve_job_records
   #   @!scope class
@@ -88,7 +104,8 @@ module GoodJob
   #   @example Preserve only jobs that were discarded
   #     GoodJob.preserve_job_records = ->(active_job, exception, error_event) { error_event == :discarded }
   #   @return [Boolean, Symbol, Proc, nil]
-  mattr_accessor :preserve_job_records, default: true
+  singleton_class.attr_accessor :preserve_job_records
+  self.preserve_job_records = true
 
   # @!attribute [rw] retry_on_unhandled_error
   #   @!scope class
@@ -97,7 +114,8 @@ module GoodJob
   #   If +false+, jobs will be discarded or marked as finished if they raise an instance of a handled exception.
   #   @see GoodJob.handled_exceptions
   #   @return [Boolean, nil]
-  mattr_accessor :retry_on_unhandled_error, default: false
+  singleton_class.attr_accessor :retry_on_unhandled_error
+  self.retry_on_unhandled_error = false
 
   # @!attribute [rw] handled_exceptions
   #   @!scope class
@@ -107,7 +125,8 @@ module GoodJob
   #   @example Also rescue ScriptError
   #     GoodJob.handled_exceptions = [StandardError, NotImplementedError, ScriptError]
   #   @return [Array<Class, String>]
-  mattr_accessor :handled_exceptions, default: [StandardError, NotImplementedError]
+  singleton_class.attr_accessor :handled_exceptions
+  self.handled_exceptions = [StandardError, NotImplementedError]
 
   # Resolved exception classes from {handled_exceptions}.
   # @return [Array<Class>]
@@ -123,19 +142,22 @@ module GoodJob
   #     # config/initializers/good_job.rb
   #     GoodJob.on_thread_error = -> (exception) { Raven.capture_exception(exception) }
   #   @return [Proc, nil]
-  mattr_accessor :on_thread_error, default: nil
+  singleton_class.attr_accessor :on_thread_error
+  self.on_thread_error = nil
 
   # @!attribute [rw] configuration
   #   @!scope class
   #   Global configuration object for GoodJob.
   #   @return [GoodJob::Configuration, nil]
-  mattr_accessor :configuration, default: GoodJob::Configuration.new({})
+  singleton_class.attr_accessor :configuration
+  self.configuration = GoodJob::Configuration.new({})
 
   # @!attribute [rw] capsule
   #   @!scope class
   #   Global/default execution capsule for GoodJob.
   #   @return [GoodJob::Capsule, nil]
-  mattr_accessor :capsule, default: GoodJob::Capsule.new(configuration: configuration)
+  singleton_class.attr_accessor :capsule
+  self.capsule = GoodJob::Capsule.new(configuration: configuration)
 
   # Called with exception when a GoodJob thread raises an exception
   # @param exception [Exception] Exception that was raised
@@ -156,7 +178,57 @@ module GoodJob
     self._active_record_configuration = block
   end
 
-  mattr_accessor :_active_record_configuration, default: nil
+  singleton_class.attr_accessor :_active_record_configuration
+  self._active_record_configuration = nil
+
+  # Makes GoodJob's global state Ractor-shareable so that jobs can be enqueued
+  # and performed from non-main Ractors. Called automatically by
+  # +Rails.application.ractorize!+ on Rails versions that support Ractors.
+  # Background execution (capsules, schedulers, the notifier) remains on the
+  # main Ractor.
+  # @return [void]
+  def self.ractorize!
+    _load_record_schemas
+    LogSubscriber.prepare_for_sharing
+    Ractors.make_shareable(configuration.prepare_for_sharing)
+    Ractors.make_shareable(handled_exceptions)
+    Ractors.make_shareable(logger)
+    self.preserve_job_records = Ractors.try_shareable_proc(preserve_job_records)
+    self.on_thread_error = Ractors.try_shareable_proc(on_thread_error)
+    _make_job_classes_shareable
+  end
+
+  # Concurrency and label settings are class attributes that may hold
+  # user-provided procs; they are frozen in place on each job class.
+  # @return [void]
+  def self._make_job_classes_shareable
+    attributes = %i[good_job_concurrency_config good_job_concurrency_rules good_job_labels]
+    [ActiveJob::Base, *ActiveJob::Base.descendants].each do |job_class|
+      attributes.each do |attribute|
+        Ractors.try_make_shareable(job_class.public_send(attribute)) if job_class.respond_to?(attribute)
+      end
+    end
+  end
+
+  # Active Record schemas and GoodJob's database capability checks are
+  # lazily loaded into class-level state, which can only be written from
+  # the main Ractor.
+  # @return [void]
+  def self._load_record_schemas
+    GoodJob::AdvisoryLockable.hash_function
+    GoodJob::BaseRecord.descendants.each do |record_class|
+      next if record_class.abstract_class?
+
+      record_class.load_schema
+      record_class.define_attribute_methods
+    end
+    GoodJob::Job.lock_type_column_exists?
+    GoodJob::Job.supports_cte_materialization_specifiers?
+    GoodJob::Job.database_supports_websearch_to_tsquery?
+    GoodJob::BatchRecord.database_supports_websearch_to_tsquery?
+  rescue ActiveRecord::ActiveRecordError => e
+    logger&.warn("GoodJob could not load its database schema before ractorizing: #{e.message}")
+  end
 
   # Stop executing jobs.
   # GoodJob does its work in pools of background threads.
@@ -177,6 +249,16 @@ module GoodJob
   # @return [Boolean] whether background threads are shut down
   def self.shutdown?
     Capsule.instances.all?(&:shutdown?)
+  end
+
+  # Removes shut down instances (e.g. {GoodJob::Capsule}, {GoodJob::Scheduler}, {GoodJob::Notifier}) from their
+  # class-level registries so they can be garbage collected. Shut down instances are otherwise retained so that
+  # {.restart} can restart them; pruned instances will not be restarted by {.restart} unless started again directly.
+  # This is useful in processes that repeatedly create and shut down capsules, such as test suites.
+  # @return [void]
+  def self.prune
+    [Adapter, Capsule, CronManager, Notifier, Poller, Scheduler, SharedExecutor, CapsuleTracker].each(&:prune)
+    nil
   end
 
   # Stops and restarts executing jobs.
@@ -250,6 +332,8 @@ module GoodJob
         deleted_jobs_count += deleted_jobs
       end
 
+      GoodJob::ConcurrencyClaim.cleanup_orphaned if GoodJob::ConcurrencyClaim.table_exists?
+
       batches_query = GoodJob::BatchRecord.finished_before(timestamp).limit(in_batches_of)
       batches_query = batches_query.succeeded unless include_discarded
       loop do
@@ -315,8 +399,9 @@ module GoodJob
   # For use in tests/CI to validate GoodJob is up-to-date.
   # @return [Boolean]
   def self.migrated?
-    GoodJob::Job.lock_type_migrated? &&
-      GoodJob::Job.connection.index_name_exists?(:good_jobs, "index_good_jobs_on_unfinished_or_errored")
+    GoodJob::Execution.connection_pool.with_connection do |connection|
+      connection.index_name_exists?(GoodJob::Execution.table_name, :index_good_job_executions_on_created_at)
+    end
   end
 
   # Pause job execution for a given queue or job class.
@@ -341,8 +426,8 @@ module GoodJob
   # @param job_class [String, nil] Job class name to check
   # @param label [String, nil] Label to check
   # @return [Boolean]
-  def self.paused?(queue: nil, job_class: nil, label: nil)
-    GoodJob::Setting.paused?(queue: queue, job_class: job_class, label: label)
+  def self.paused?(active_job: nil, queue: nil, job_class: nil, label: nil)
+    GoodJob::Setting.paused?(active_job: active_job, queue: queue, job_class: job_class, label: label)
   end
 
   # Get a list of all paused queues and job classes

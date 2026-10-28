@@ -31,6 +31,14 @@ RSpec.describe GoodJob::Process do
   end
 
   describe '.ns_current_state' do
+    it 'round trips fiber and thread capacity through persisted process state', :fiber_isolation, :requires_async do
+      scheduler = GoodJob::Scheduler.new(GoodJob::JobPerformer.new('io'), fibers: 25)
+      record = described_class.create!(state: described_class.process_state)
+      expect(record.reload.schedulers).to include(include('queues' => 'io', 'max_threads' => 1, 'max_fibers' => 25))
+    ensure
+      scheduler&.shutdown
+    end
+
     it 'contains information about the process' do
       expect(described_class.process_state).to include(
         database_connection_pool: include(
@@ -38,6 +46,16 @@ RSpec.describe GoodJob::Process do
           active: be_an(Integer)
         )
       )
+    end
+
+    it 'excludes schedulers that have been shut down' do
+      GoodJob::Scheduler.new(GoodJob::JobPerformer.new('running'), max_threads: 1)
+      stopped_scheduler = GoodJob::Scheduler.new(GoodJob::JobPerformer.new('stopped'), max_threads: 1)
+      stopped_scheduler.shutdown
+
+      schedulers = described_class.process_state[:schedulers]
+      expect(schedulers.pluck(:queues)).to include('running')
+      expect(schedulers.pluck(:queues)).not_to include('stopped')
     end
   end
 
@@ -87,6 +105,15 @@ RSpec.describe GoodJob::Process do
         described_class.where(id: process.id).delete_all
 
         expect { process.refresh }.to change(described_class, :count).from(0).to(1)
+      end
+
+      it 'recreates the record with the same id' do
+        process = described_class.create! state: {}, updated_at: 1.day.ago
+        described_class.where(id: process.id).delete_all
+
+        2.times { process.refresh }
+
+        expect(described_class.pluck(:id)).to eq [process.id]
       end
     end
   end

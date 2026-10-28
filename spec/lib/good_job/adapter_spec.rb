@@ -218,6 +218,35 @@ RSpec.describe GoodJob::Adapter do
       end
     end
 
+    context 'when not on the main Ractor' do
+      before do
+        allow(GoodJob::Ractors).to receive(:main?).and_return(false)
+        allow(GoodJob::Job).to receive(:insert_all)
+      end
+
+      it 'inserts jobs individually' do
+        active_jobs = [ExampleJob.new, ExampleJob.new]
+        result = adapter.enqueue_all(active_jobs)
+
+        expect(result).to eq 2
+        expect(GoodJob::Job).not_to have_received(:insert_all)
+        expect(active_jobs.map(&:provider_job_id)).to all be_present
+        expect(GoodJob::Job.where(active_job_id: active_jobs.map(&:job_id)).count).to eq 2
+      end
+
+      it 'skips jobs that were already enqueued' do
+        existing_job = ExampleJob.new
+        adapter.enqueue_all([existing_job])
+        new_job = ExampleJob.new
+        duplicate_job = ExampleJob.deserialize(existing_job.serialize)
+
+        result = adapter.enqueue_all([duplicate_job, new_job])
+
+        expect(result).to eq 1
+        expect(new_job.provider_job_id).to be_present
+      end
+    end
+
     context 'when the adapter is inline' do
       let(:adapter) { described_class.new(execution_mode: :inline) }
 
@@ -277,9 +306,91 @@ RSpec.describe GoodJob::Adapter do
     end
   end
 
+  describe '#async_started?' do
+    it 'uses GoodJob.capsule when no capsule is given' do
+      adapter = described_class.new(execution_mode: :external)
+      capsule = GoodJob::Capsule.new(configuration: GoodJob::Configuration.new({ queues: 'mice:1', poll_interval: -1 }))
+      GoodJob.capsule = capsule
+
+      expect { capsule.start }.to change(adapter, :async_started?).from(false).to(true)
+      expect { adapter.shutdown }.to change(capsule, :shutdown?).from(false).to(true)
+    end
+
+    it 'uses its own capsule when given' do
+      capsule = GoodJob::Capsule.new(configuration: GoodJob::Configuration.new({ queues: 'mice:1', poll_interval: -1 }))
+      adapter = described_class.new(execution_mode: :external, _capsule: capsule)
+
+      expect { capsule.start }.to change(adapter, :async_started?).from(false).to(true)
+      expect(GoodJob.capsule).not_to be_running
+      adapter.shutdown
+    end
+  end
+
+  describe '.prune' do
+    it 'removes adapters once Rails has initialized' do
+      adapter
+      expect(described_class.instances).to include(adapter)
+
+      described_class.prune
+      expect(described_class.instances).not_to include(adapter)
+    end
+
+    it 'retains adapters until Rails has initialized so they can be started' do
+      allow(GoodJob).to receive(:async_ready?).and_return(false)
+      adapter
+
+      described_class.prune
+      expect(described_class.instances).to include(adapter)
+      described_class.instances.delete(adapter)
+    end
+  end
+
   describe '#stopping?' do
-    it 'is callable' do
+    it 'is callable without a job argument for Rails <= 8.1 compatibility' do
       expect { adapter.stopping? }.not_to raise_error
+    end
+
+    it 'returns :stopping when the current thread is shutting down' do
+      allow(GoodJob).to receive(:current_thread_shutting_down?).and_return(true)
+
+      expect(adapter.stopping?).to eq(:stopping)
+    end
+
+    it 'returns :force_discarded when the current GoodJob job is finished' do
+      GoodJob::CurrentThread.within do |current_thread|
+        current_thread.job = GoodJob::Job.new(finished_at: Time.current)
+
+        expect(adapter.stopping?).to eq(:force_discarded)
+      end
+    end
+
+    context 'with pauses enabled' do
+      before do
+        allow(GoodJob.configuration).to receive(:enable_pauses).and_return(true)
+      end
+
+      it 'delegates pause evaluation to the settings store when a job argument is provided' do
+        allow(GoodJob::Setting).to receive(:paused?).with(active_job: active_job).and_return(:queue_name_paused)
+
+        expect(adapter.stopping?(active_job)).to eq(:queue_name_paused)
+      end
+
+      it 'returns false when Rails does not provide an Active Job argument' do
+        GoodJob::Setting.pause(queue: "critical")
+        allow(GoodJob::Setting).to receive(:paused?).and_call_original
+
+        expect(adapter.stopping?).to be false
+        expect(GoodJob::Setting).not_to have_received(:paused?)
+      end
+    end
+
+    it 'ignores pauses when pauses are disabled' do
+      allow(GoodJob.configuration).to receive(:enable_pauses).and_return(false)
+      GoodJob::Setting.pause(queue: "default")
+      allow(GoodJob::Setting).to receive(:paused?).and_call_original
+
+      expect(adapter.stopping?(active_job)).to be false
+      expect(GoodJob::Setting).not_to have_received(:paused?)
     end
   end
 
